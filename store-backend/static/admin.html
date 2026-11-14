@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>合璧OS 应用商店 · 运营控制台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Ccircle cx='256' cy='256' r='178' fill='none' stroke='%2322C3E6' stroke-width='20'/%3E%3Ccircle cx='256' cy='256' r='104' fill='%232E7CF6'/%3E%3C/svg%3E">
+<style>
+:root {
+  --accent: #2E7CF6; --accent2: #22C3E6;
+  --navy: #0d2f5e; --navy-deep: #071a38;
+  --bg: #f3f6fb; --panel: rgba(255,255,255,.92); --panel-solid: #ffffff; --border: #e3e9f2;
+  --text: #1c2530; --text2: #66748a; --danger: #E74856; --ok: #00B4A6;
+  --shadow: 0 2px 12px rgba(13,47,94,.08);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif; background: var(--bg); color: var(--text); }
+a { color: var(--accent); text-decoration: none; }
+
+/* ============ 登录页(品牌主视觉) ============ */
+#login { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center;
+  background:
+    radial-gradient(ellipse 60% 45% at 50% 28%, rgba(46,124,246,.28), transparent 70%),
+    radial-gradient(ellipse 40% 35% at 78% 72%, rgba(34,195,230,.14), transparent 70%),
+    linear-gradient(160deg, #123a6b, var(--navy-deep) 60%, #020a18);
+  overflow: hidden; }
+#login::before { content: ""; position: absolute; inset: 0;
+  background-image: linear-gradient(rgba(124,196,255,.05) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(124,196,255,.05) 1px, transparent 1px);
+  background-size: 44px 44px; mask-image: radial-gradient(ellipse at 50% 40%, #000 30%, transparent 75%); }
+#login .lb { position: relative; width: 380px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14);
+  border-radius: 18px; padding: 40px 36px 30px; backdrop-filter: blur(14px); color: #fff; text-align: center;
+  box-shadow: 0 24px 80px rgba(0,0,0,.45); }
+.jade-ring { width: 84px; height: 84px; margin: 0 auto 14px; position: relative; }
+.jade-ring svg { width: 100%; height: 100%; }
+.jade-ring .spin { transform-origin: 256px 256px; animation: spin 18s linear infinite; }
+.jade-ring .pulse { transform-origin: 256px 256px; animation: pulse 3.2s ease-in-out infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+#login h1 { font-size: 24px; margin-bottom: 6px; letter-spacing: 1px; }
+#login .sub { font-size: 12.5px; opacity: .68; margin-bottom: 18px; letter-spacing: .5px; }
+.chips { display: flex; gap: 6px; justify-content: center; margin-bottom: 24px; flex-wrap: wrap; }
+.chips span { font-size: 10.5px; padding: 3px 10px; border-radius: 10px; border: 1px solid rgba(124,196,255,.35);
+  color: #BFE8FF; letter-spacing: .5px; }
+#login input { width: 100%; padding: 11px 14px; margin-bottom: 12px; border-radius: 9px; border: 1px solid rgba(255,255,255,.22);
+  background: rgba(255,255,255,.09); color: #fff; outline: none; font-size: 14px; transition: border .2s; }
+#login input:focus { border-color: var(--accent2); background: rgba(255,255,255,.14); }
+#login input::placeholder { color: rgba(255,255,255,.45); }
+#login button { width: 100%; padding: 11px; border: none; border-radius: 9px; cursor: pointer; font-size: 14.5px;
+  background: linear-gradient(90deg, var(--accent), var(--accent2)); color: #fff; font-weight: 600; letter-spacing: 4px;
+  box-shadow: 0 6px 22px rgba(46,124,246,.4); transition: transform .15s, box-shadow .15s; }
+#login button:hover { transform: translateY(-1px); box-shadow: 0 10px 28px rgba(46,124,246,.55); }
+#login .err { color: #ffb4b4; font-size: 12px; min-height: 18px; margin-top: 10px; }
+#login .hint { font-size: 11.5px; opacity: .55; margin-top: 16px; }
+#login .slogan { margin-top: 22px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,.1);
+  font-size: 11px; opacity: .55; letter-spacing: 2px; }
+
+/* ============ 控制台布局 ============ */
+#app { display: none; min-height: 100vh; grid-template-columns: 232px 1fr; }
+header { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; padding: 0 18px; height: 56px;
+  background: linear-gradient(90deg, var(--navy), #1a4f9c); color: #fff; position: sticky; top: 0; z-index: 40;
+  box-shadow: 0 2px 14px rgba(13,47,94,.25); }
+header .logo { width: 28px; height: 28px; flex: none; }
+header .t { font-size: 15.5px; font-weight: 700; letter-spacing: .5px; }
+header .chip { font-size: 10.5px; padding: 2px 9px; border-radius: 9px; background: rgba(255,255,255,.16);
+  border: 1px solid rgba(255,255,255,.22); letter-spacing: .5px; }
+header .right { margin-left: auto; display: flex; gap: 12px; align-items: center; font-size: 12px; }
+header .right a { color: #cfe3ff; }
+header .right a:hover { color: #fff; }
+.status { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #BFE8FF; }
+.status i { width: 7px; height: 7px; border-radius: 50%; background: #4ade80; box-shadow: 0 0 8px #4ade80; }
+.avatar { width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), var(--accent2));
+  display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex: none; }
+
+aside { background: var(--panel); border-right: 1px solid var(--border); padding: 16px 10px 12px;
+  display: flex; flex-direction: column; position: sticky; top: 56px; height: calc(100vh - 56px); backdrop-filter: blur(8px); }
+.brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px 14px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+.brand svg { width: 34px; height: 34px; flex: none; }
+.brand .bn { font-size: 13.5px; font-weight: 700; }
+.brand .bv { font-size: 10.5px; color: var(--text2); }
+aside .nav { display: flex; flex-direction: column; gap: 2px; }
+aside .nav button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 12px; border: none;
+  background: none; border-radius: 7px; cursor: pointer; font-size: 13.5px; color: var(--text); text-align: left;
+  transition: background .15s; }
+aside .nav button:hover { background: #eef3fa; }
+aside .nav button.active { background: rgba(46,124,246,.12); color: var(--accent); font-weight: 600; }
+aside .nav button .ico { font-size: 15px; width: 20px; text-align: center; }
+.side-foot { margin-top: auto; padding: 12px 10px 4px; border-top: 1px solid var(--border); font-size: 10.5px;
+  color: var(--text2); line-height: 1.7; }
+.side-foot b { color: var(--accent); font-weight: 600; }
+
+main { padding: 24px 28px 40px; overflow-x: auto; }
+.pg-head { display: flex; align-items: flex-end; gap: 14px; margin-bottom: 18px; flex-wrap: wrap; }
+.pg-head h2 { font-size: 20px; }
+.pg-head .d { font-size: 12.5px; color: var(--text2); padding-bottom: 2px; }
+.banner { background: linear-gradient(120deg, var(--navy), #1a4f9c 55%, #2E7CF6); color: #fff; border-radius: 12px;
+  padding: 16px 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 16px; overflow: hidden; position: relative; }
+.banner::after { content: ""; position: absolute; right: -30px; top: -40px; width: 180px; height: 180px; border-radius: 50%;
+  border: 26px solid rgba(34,195,230,.16); }
+.banner .bt { font-size: 15px; font-weight: 700; letter-spacing: .5px; }
+.banner .bs { font-size: 11.5px; opacity: .75; margin-top: 3px; }
+.banner svg { width: 40px; height: 40px; flex: none; }
+
+/* ============ 看板 ============ */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 20px; }
+.card { background: var(--panel-solid); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px;
+  box-shadow: var(--shadow); transition: transform .15s; }
+.card:hover { transform: translateY(-2px); }
+.card .k { font-size: 12px; color: var(--text2); }
+.card .v { font-size: 27px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.card .v small { font-size: 12px; font-weight: 400; color: var(--text2); }
+.card.a { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; border: none; }
+.card.a .k { color: rgba(255,255,255,.85); }
+.card.a .v small { color: rgba(255,255,255,.8); }
+.panels { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; }
+@media (max-width: 900px) { .panels { grid-template-columns: 1fr; } }
+.panel { background: var(--panel-solid); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; box-shadow: var(--shadow); }
+.panel h3 { font-size: 14px; margin-bottom: 12px; }
+.bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; font-size: 12.5px; }
+.bar-row .nm { width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-row .bar { flex: 1; height: 12px; border-radius: 6px; background: #edf1f7; overflow: hidden; }
+.bar-row .bar i { display: block; height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--accent), var(--accent2)); }
+.bar-row .dl { width: 64px; text-align: right; color: var(--text2); font-variant-numeric: tabular-nums; }
+.ev { font-size: 12.5px; padding: 8px 0; border-bottom: 1px dashed var(--border); display: flex; gap: 10px; align-items: baseline; }
+.ev:last-child { border: none; }
+.ev .ts { color: var(--text2); flex: none; font-variant-numeric: tabular-nums; }
+.ev .tag { flex: none; font-size: 10.5px; padding: 1px 8px; border-radius: 8px; background: #e8f1ff; color: var(--accent); }
+
+/* ============ 表格 ============ */
+table { width: 100%; border-collapse: collapse; background: var(--panel-solid); border-radius: 12px; overflow: hidden;
+  border: 1px solid var(--border); font-size: 13px; box-shadow: var(--shadow); }
+th { text-align: left; padding: 10px 12px; background: #f7f9fd; color: var(--text2); font-weight: 600; font-size: 12px;
+  border-bottom: 1px solid var(--border); white-space: nowrap; }
+td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tr:last-child td { border: none; }
+tr:hover td { background: #fafcfe; }
+.badge { font-size: 11px; padding: 2px 9px; border-radius: 9px; white-space: nowrap; }
+.badge.self { background: rgba(46,124,246,.13); color: var(--accent); }
+.badge.net { background: rgba(0,180,166,.13); color: var(--ok); }
+.badge.pub { background: rgba(0,180,166,.13); color: var(--ok); }
+.badge.off { background: rgba(231,72,86,.12); color: var(--danger); }
+.badge.draft { background: rgba(102,116,138,.13); color: var(--text2); }
+.btn { border: 1px solid var(--border); background: var(--panel-solid); border-radius: 6px; padding: 5px 12px;
+  font-size: 12px; cursor: pointer; color: var(--text); transition: all .15s; }
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn.primary { background: linear-gradient(90deg, var(--accent), var(--accent2)); border: none; color: #fff; font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.1); color: #fff; }
+.btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+.btn.sm { padding: 3px 9px; font-size: 11.5px; }
+.toolbar { display: flex; gap: 10px; margin-bottom: 14px; align-items: center; flex-wrap: wrap; }
+.toolbar input[type=search] { padding: 7px 12px; border: 1px solid var(--border); border-radius: 7px; font-size: 13px;
+  width: 240px; outline: none; background: var(--panel-solid); }
+.toolbar input[type=search]:focus { border-color: var(--accent); }
+.toolbar .sp { flex: 1; }
+
+/* ============ 弹窗 ============ */
+.mask { position: fixed; inset: 0; background: rgba(10,20,40,.45); z-index: 50; display: none;
+  align-items: center; justify-content: center; backdrop-filter: blur(2px); }
+.mask.show { display: flex; }
+.dlg { background: var(--panel-solid); border-radius: 14px; width: 540px; max-width: 92vw; max-height: 88vh; overflow: auto;
+  box-shadow: 0 24px 80px rgba(13,47,94,.3); animation: dlgIn .18s ease-out; }
+@keyframes dlgIn { from { transform: translateY(10px) scale(.98); opacity: 0; } }
+.dlg .dh { padding: 18px 22px 10px; font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.dlg .db { padding: 6px 22px 14px; }
+.dlg .df { padding: 12px 22px 18px; display: flex; gap: 10px; justify-content: flex-end; }
+.f-row { display: flex; gap: 12px; margin-bottom: 12px; }
+.f-row label { flex: 1; font-size: 12px; color: var(--text2); display: flex; flex-direction: column; gap: 5px; }
+.f-row input, .f-row select, .f-row textarea { padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px;
+  font-size: 13px; outline: none; font-family: inherit; background: var(--panel-solid); color: var(--text); }
+.f-row input:focus, .f-row textarea:focus { border-color: var(--accent); }
+.hint { font-size: 11.5px; color: var(--text2); margin-top: 4px; line-height: 1.6; }
+
+/* ============ 软件源 ============ */
+.src { display: flex; align-items: center; gap: 14px; background: var(--panel-solid); border: 1px solid var(--border);
+  border-radius: 12px; padding: 14px 16px; margin-bottom: 10px; box-shadow: var(--shadow); }
+.src .ico { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center;
+  font-size: 22px; flex: none; }
+.src .info { flex: 1; }
+.src .nm { font-size: 14px; font-weight: 700; }
+.src .ds { font-size: 12px; color: var(--text2); }
+.src .cnt { font-size: 12px; color: var(--text2); margin-right: 8px; font-variant-numeric: tabular-nums; }
+.switch { position: relative; width: 42px; height: 23px; flex: none; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch .sl { position: absolute; inset: 0; border-radius: 12px; background: #cfd8e4; cursor: pointer; transition: .2s; }
+.switch .sl::before { content: ""; position: absolute; width: 17px; height: 17px; border-radius: 50%;
+  background: #fff; top: 3px; left: 3px; transition: .2s; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+.switch input:checked + .sl { background: linear-gradient(90deg, var(--accent), var(--accent2)); }
+.switch input:checked + .sl::before { transform: translateX(19px); }
+.toast { position: fixed; right: 18px; bottom: 18px; background: #101c2c; color: #fff; padding: 11px 18px;
+  border-radius: 10px; font-size: 13px; z-index: 200; opacity: 0; transform: translateY(8px); transition: .25s;
+  box-shadow: 0 10px 30px rgba(0,0,0,.3); }
+.toast.show { opacity: 1; transform: none; }
+.upload-zone { border: 2px dashed var(--border); border-radius: 12px; padding: 34px; text-align: center;
+  color: var(--text2); font-size: 13px; cursor: pointer; margin-bottom: 16px; background: var(--panel-solid); transition: all .15s; }
+.upload-zone:hover { border-color: var(--accent); color: var(--accent); }
+.pkg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.pkg { background: var(--panel-solid); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; font-size: 12.5px; }
+.pkg .nm { font-weight: 600; font-family: Consolas, monospace; font-size: 12px; word-break: break-all; }
+.pkg .meta { color: var(--text2); font-size: 11px; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<!-- ============ 品牌登录页 ============ -->
+<div id="login">
+  <div class="lb">
+    <div class="jade-ring">
+      <svg viewBox="0 0 512 512">
+        <g class="spin"><circle cx="256" cy="256" r="178" fill="none" stroke="#7CC4FF" stroke-width="14" opacity=".85" stroke-dasharray="60 22"/></g>
+        <circle cx="256" cy="256" r="178" fill="none" stroke="#22C3E6" stroke-width="10" opacity=".5"/>
+        <g class="pulse"><circle cx="256" cy="256" r="104" fill="#2E7CF6"/>
+        <g stroke="#fff" stroke-width="13" stroke-linecap="round"><line x1="256" y1="206" x2="256" y2="306"/><line x1="206" y1="256" x2="306" y2="256"/></g></g>
+      </svg>
+    </div>
+    <h1>合璧OS 应用商店</h1>
+    <div class="sub">运营控制台 · HeBi Store Console</div>
+    <div class="chips"><span>5.0 LTS · Jade</span><span>BIOS + UEFI 双模</span><span>自研 .mdn 生态</span></div>
+    <input id="lu" placeholder="管理员账号" value="admin">
+    <input id="lp" type="password" placeholder="密码" value="hebi" onkeydown="if(event.key==='Enter')doLogin()">
+    <button onclick="doLogin()">进入控制台</button>
+    <div class="err" id="lerr"></div>
+    <div class="hint">默认账号 admin / hebi（本地演示环境）</div>
+    <div class="slogan">珠联璧合 — 融 Linux 内核，承 Windows 体验</div>
+  </div>
+</div>
+
+<div id="app">
+  <header>
+    <svg class="logo" viewBox="0 0 512 512"><circle cx="256" cy="256" r="178" fill="none" stroke="#7CC4FF" stroke-width="22"/><circle cx="256" cy="256" r="104" fill="#fff"/><g stroke="#2E7CF6" stroke-width="15" stroke-linecap="round"><line x1="256" y1="206" x2="256" y2="306"/><line x1="206" y1="256" x2="306" y2="256"/></g></svg>
+    <span class="t">合璧OS 应用商店</span><span class="chip">运营控制台 v5.0 · Jade</span>
+    <div class="right">
+      <span class="status"><i></i>服务正常</span>
+      <a href="/web-shell/index.html" target="_blank">🖥️ Web 桌面演示</a>
+      <a href="/docs" target="_blank">📚 API 文档</a>
+      <span class="avatar" id="ava">A</span>
+      <span id="who">admin</span>
+      <a href="javascript:logout()">退出</a>
+    </div>
+  </header>
+  <aside>
+    <div class="brand">
+      <svg viewBox="0 0 512 512"><circle cx="256" cy="256" r="178" fill="none" stroke="#2E7CF6" stroke-width="26"/><circle cx="256" cy="256" r="104" fill="#22C3E6"/><g stroke="#fff" stroke-width="17" stroke-linecap="round"><line x1="256" y1="206" x2="256" y2="306"/><line x1="206" y1="256" x2="306" y2="256"/></g></svg>
+      <div><div class="bn">合璧OS 应用商店</div><div class="bv">HeBi Store · 5.0 LTS (Jade)</div></div>
+    </div>
+    <div class="nav" id="nav">
+      <button data-p="dash" class="active"><span class="ico">📊</span>数据看板</button>
+      <button data-p="apps"><span class="ico">📦</span>应用管理</button>
+      <button data-p="sources"><span class="ico">🌐</span>软件源</button>
+      <button data-p="upload"><span class="ico">⬆️</span>安装包仓库</button>
+      <button data-p="logs"><span class="ico">📜</span>操作日志</button>
+    </div>
+    <div class="side-foot">
+      <b>珠联璧合</b> — 融 Linux 内核，承 Windows 体验<br>
+      内核 Linux 6.8 · amd64 · 支持 .deb / .exe / .msi / .mdn<br>
+      © 合璧OS HeBi OS 工作室
+    </div>
+  </aside>
+  <main id="main"></main>
+</div>
+
+<div class="mask" id="mask"><div class="dlg" id="dlg"></div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const API = "";
+let APPS = [], SOURCES = [], STATS = null;
+
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2600); }
+
+/* ---------- 登录 ---------- */
+function doLogin() {
+  const u = $("#lu").value.trim(), p = $("#lp").value;
+  if (u === "admin" && p === "hebi") {
+    localStorage.setItem("hbadmin", "1");
+    $("#login").style.display = "none";
+    $("#app").style.display = "grid";
+    $("#who").textContent = u;
+    $("#ava").textContent = u.charAt(0).toUpperCase();
+    boot();
+  } else $("#lerr").textContent = "账号或密码不正确（演示：admin / hebi）";
+}
+function logout() { localStorage.removeItem("hbadmin"); location.reload(); }
+if (localStorage.getItem("hbadmin")) { $("#login").style.display = "none"; $("#app").style.display = "grid"; $("#who").textContent = "admin"; boot(); }
+
+/* ---------- 数据 ---------- */
+async function api(path, opts) {
+  const r = await fetch(API + path, opts);
+  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+  return r.json();
+}
+async function refresh() {
+  APPS = await api("/api/apps");
+  SOURCES = await api("/api/sources");
+  STATS = await api("/api/stats");
+}
+
+/* ---------- 路由 ---------- */
+const PAGES = { dash: pgDash, apps: pgApps, sources: pgSources, upload: pgUpload, logs: pgLogs };
+let curPage = "dash";
+function go(p) {
+  curPage = p;
+  document.querySelectorAll("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.p === p));
+  PAGES[p]();
+}
+$("#nav").onclick = (e) => { if (e.target.dataset.p) go(e.target.dataset.p); };
+
+async function boot() { await refresh(); go(curPage); }
+
+/* ---------- 看板 ---------- */
+function pgDash() {
+  const s = STATS;
+  const max = Math.max(1, ...s.top.map((t) => t.downloads));
+  $("#main").innerHTML = `
+    <div class="pg-head"><h2>数据看板</h2><div class="d">合璧OS 应用商店运营总览</div></div>
+    <div class="banner">
+      <svg viewBox="0 0 512 512"><circle cx="256" cy="256" r="178" fill="none" stroke="#7CC4FF" stroke-width="24" opacity=".8"/><circle cx="256" cy="256" r="104" fill="#22C3E6"/><g stroke="#fff" stroke-width="15" stroke-linecap="round"><line x1="256" y1="206" x2="256" y2="306"/><line x1="206" y1="256" x2="306" y2="256"/></g></svg>
+      <div><div class="bt">欢迎回来，运营官</div><div class="bs">商店后端运行正常 · 网络源聚合 + 自研 .mdn 双通道供应 · 数据实时同步</div></div>
+    </div>
+    <div class="cards">
+      <div class="card a"><div class="k">上架应用总数</div><div class="v">${s.total_apps} <small>个</small></div></div>
+      <div class="card"><div class="k">累计下载 / 安装</div><div class="v">${s.total_downloads.toLocaleString()}</div></div>
+      <div class="card"><div class="k">自研应用（.mdn）</div><div class="v">${s.self_apps} <small>个</small></div></div>
+      <div class="card"><div class="k">网络源应用</div><div class="v">${s.net_apps} <small>个</small></div></div>
+      <div class="card"><div class="k">启用软件源</div><div class="v">${s.sources_on}<small> / ${s.sources_total}</small></div></div>
+    </div>
+    <div class="panels">
+      <div class="panel"><h3>🔥 下载排行 TOP5</h3>
+        ${s.top.map((t) => `<div class="bar-row"><span class="nm" title="${t.name}">${t.name}</span>
+          <span class="bar"><i style="width:${(t.downloads / max * 100).toFixed(1)}%"></i></span>
+          <span class="dl">${t.downloads.toLocaleString()}</span></div>`).join("")}
+      </div>
+      <div class="panel"><h3>🕒 最近操作</h3>
+        ${s.events.map((e) => `<div class="ev"><span class="tag">${e.kind}</span><span>${e.message}</span>
+          <span class="ts" style="margin-left:auto">${new Date(e.ts * 1000).toLocaleString("zh-CN", { hour12: false })}</span></div>`).join("") || '<div class="hint">暂无操作</div>'}
+      </div>
+    </div>`;
+}
+
+/* ---------- 应用管理 ---------- */
+function pgApps() {
+  $("#main").innerHTML = `
+    <div class="pg-head"><h2>应用管理</h2><div class="d">上架 / 下架 / 编辑商店应用（自研 + 网络源）</div></div>
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="搜索应用名称 / 描述…" oninput="renderAppTable()">
+      <select id="fsrc" class="btn" onchange="renderAppTable()">
+        <option value="">全部来源</option><option value="self">💎 自研</option><option value="net">🌐 网络源</option>
+      </select>
+      <select id="fst" class="btn" onchange="renderAppTable()">
+        <option value="">全部状态</option><option value="published">已上架</option><option value="draft">草稿</option><option value="offline">已下架</option>
+      </select>
+      <span class="sp"></span>
+      <button class="btn primary" onclick="appDlg()">＋ 上架新应用</button>
+    </div>
+    <table><thead><tr>
+      <th>应用</th><th>来源</th><th>版本</th><th>大小</th><th>下载量</th><th>评分</th><th>安装包</th><th>状态</th><th>操作</th>
+    </tr></thead><tbody id="tb"></tbody></table>`;
+  renderAppTable();
+}
+function renderAppTable() {
+  const q = $("#q").value.trim().toLowerCase(), fsrc = $("#fsrc").value, fst = $("#fst").value;
+  const rows = APPS.filter((a) =>
+    (!q || a.name.toLowerCase().includes(q) || (a.desc || "").toLowerCase().includes(q)) &&
+    (!fsrc || a.source === fsrc) && (!fst || a.status === fst));
+  $("#tb").innerHTML = rows.map((a) => `<tr>
+    <td><div style="display:flex;gap:10px;align-items:center">
+      <span style="font-size:22px">${a.icon}</span>
+      <div><div style="font-weight:600">${a.name}</div><div style="font-size:11px;color:var(--text2)">${a.slug}</div></div>
+    </div></td>
+    <td><span class="badge ${a.source === "self" ? "self" : "net"}">${a.source === "self" ? "💎 自研" : "🌐 " + (a.net_origin || "网络")}</span></td>
+    <td>v${a.version}</td><td>${a.size || "—"}</td>
+    <td>${(a.downloads || 0).toLocaleString()}</td><td>${(a.rating || 0).toFixed(1)} ★</td>
+    <td style="font-family:Consolas,monospace;font-size:11px">${a.pkg_file || "—"}</td>
+    <td><span class="badge ${a.status === "published" ? "pub" : a.status === "offline" ? "off" : "draft"}">${{ published: "已上架", offline: "已下架", draft: "草稿" }[a.status] || a.status}</span></td>
+    <td style="white-space:nowrap">
+      <button class="btn sm" onclick="appDlg('${a.slug}')">编辑</button>
+      <button class="btn sm" onclick="toggleStatus('${a.slug}')">${a.status === "published" ? "下架" : "上架"}</button>
+      <button class="btn sm danger" onclick="delApp('${a.slug}')">删除</button>
+    </td></tr>`).join("") || '<tr><td colspan="9" style="text-align:center;color:var(--text2);padding:30px">没有匹配的应用</td></tr>';
+}
+function appDlg(slug) {
+  const a = slug ? APPS.find((x) => x.slug === slug) : { slug: "", name: "", dev: "珠联璧合工作室", desc: "", icon: "📦", category: "utils", version: "1.0.0", size: "", source: "self", net_origin: "", pkg_file: "", status: "published" };
+  openDlg(slug ? "✏️ 编辑应用 — " + a.name : "＋ 上架新应用", `
+    <div class="f-row"><label>标识 slug<input id="f-slug" value="${a.slug}" ${slug ? "disabled" : ""} placeholder="如 hebi-notes"></label>
+      <label>名称<input id="f-name" value="${a.name}" placeholder="应用显示名"></label></div>
+    <div class="f-row"><label>开发商<input id="f-dev" value="${a.dev}"></label>
+      <label>分类<select id="f-cat">${["utils", "system", "sound", "graphics", "network", "office", "game", "dev"].map((c) => `<option ${c === a.category ? "selected" : ""}>${c}</option>`).join("")}</select></label></div>
+    <div class="f-row"><label>图标<input id="f-icon" value="${a.icon}" maxlength="4"></label>
+      <label>版本<input id="f-ver" value="${a.version}"></label>
+      <label>大小<input id="f-size" value="${a.size}" placeholder="如 12.4 MB"></label></div>
+    <div class="f-row"><label>来源<select id="f-src" onchange="document.getElementById('f-origin').disabled=this.value!=='net'">
+      <option value="self" ${a.source === "self" ? "selected" : ""}>💎 自研</option>
+      <option value="net" ${a.source === "net" ? "selected" : ""}>🌐 网络源</option></select></label>
+      <label>网络源 id<input id="f-origin" value="${a.net_origin || ""}" ${a.source !== "net" ? "disabled" : ""} placeholder="如 flathub"></label>
+      <label>状态<select id="f-st">${["published", "draft", "offline"].map((s) => `<option ${s === a.status ? "selected" : ""}>${s}</option>`).join("")}</select></label></div>
+    <div class="f-row"><label>安装包文件<input id="f-pkg" value="${a.pkg_file || ""}" placeholder="如 hebi-notes_1.0.0_amd64.mdn"></label></div>
+    <div class="f-row"><label>简介<textarea id="f-desc" rows="3">${a.desc}</textarea></label></div>
+    <div class="hint">安装包可先上传至「安装包仓库」，再于此处引用文件名。.mdn 即 .deb 的合璧后缀。</div>`,
+    [
+      { label: "取消", cls: "" },
+      { label: slug ? "保存修改" : "确认上架", cls: "primary", fn: async () => {
+        const body = {
+          slug: $("#f-slug").value.trim(), name: $("#f-name").value.trim(),
+          dev: $("#f-dev").value.trim(), desc: $("#f-desc").value.trim(),
+          icon: $("#f-icon").value.trim() || "📦", category: $("#f-cat").value,
+          version: $("#f-ver").value.trim(), size: $("#f-size").value.trim(),
+          source: $("#f-src").value, net_origin: $("#f-origin").value.trim(),
+          pkg_file: $("#f-pkg").value.trim(), status: $("#f-st").value,
+        };
+        if (!body.slug || !body.name) return toast("标识与名称不能为空");
+        try {
+          if (slug) await api("/api/apps/" + slug, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+          else await api("/api/apps", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+          toast(slug ? "已保存修改" : "已上架 " + body.name);
+          closeDlg(); await refresh(); PAGES[curPage]();
+        } catch (e) { toast(e.message); }
+      } },
+    ]);
+}
+async function toggleStatus(slug) {
+  const a = APPS.find((x) => x.slug === slug);
+  const st = a.status === "published" ? "offline" : "published";
+  await api("/api/apps/" + slug, { method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...a, status: st }) });
+  toast(a.name + (st === "published" ? " 已上架" : " 已下架"));
+  await refresh(); renderAppTable();
+}
+async function delApp(slug) {
+  const a = APPS.find((x) => x.slug === slug);
+  if (!confirm(`确定删除「${a.name}」？该操作不可恢复。`)) return;
+  await api("/api/apps/" + slug, { method: "DELETE" });
+  toast("已删除 " + a.name);
+  await refresh(); renderAppTable();
+}
+
+/* ---------- 软件源 ---------- */
+function pgSources() {
+  $("#main").innerHTML = `<div class="pg-head"><h2>软件源管理</h2><div class="d">控制商店从各大知名 Linux 应用商店聚合应用</div></div>
+    <div class="hint" style="margin-bottom:14px">停用后客户端将不再拉取该源的应用，已上架的应用不受影响。</div>
+    ${SOURCES.map((s) => `
+    <div class="src">
+      <div class="ico" style="background:${s.color}22;color:${s.color}">${s.icon}</div>
+      <div class="info"><div class="nm">${s.name}</div><div class="ds">${s.desc}</div></div>
+      <span class="cnt">${s.count} 个应用</span>
+      <label class="switch"><input type="checkbox" ${s.enabled ? "checked" : ""} onchange="toggleSrc('${s.id}', this)"><span class="sl"></span></label>
+    </div>`).join("")}`;
+}
+async function toggleSrc(id, el) {
+  const r = await api("/api/sources/" + id + "/toggle", { method: "POST" });
+  toast((SOURCES.find((s) => s.id === id).name) + (r.enabled ? " 已启用" : " 已停用"));
+  await refresh();
+}
+
+/* ---------- 安装包仓库 ---------- */
+function pgUpload() {
+  $("#main").innerHTML = `<div class="pg-head"><h2>安装包仓库</h2><div class="d">上传 .deb / .mdn 安装包，自动解析 dpkg 元数据</div></div>
+    <div class="upload-zone" onclick="document.getElementById('upfile').click()">
+      ⬆️ 点击上传 .deb / .mdn 安装包<br>
+      <span class="hint">上传后自动解析 dpkg 元数据（Package / Version / Section…），.mdn 与 .deb 同构</span>
+    </div>
+    <input type="file" id="upfile" accept=".deb,.mdn" style="display:none" onchange="uploadPkg(this.files[0])">
+    <h3 style="font-size:14px;margin:8px 0 12px">仓库文件</h3>
+    <div class="pkg-grid" id="pkgrid"></div>`;
+  loadPkgs();
+}
+async function loadPkgs() {
+  const list = await api("/api/packages");
+  $("#pkgrid").innerHTML = list.map((p) => `
+    <div class="pkg"><div class="nm">${p.name}</div>
+      <div class="meta">${(p.size / 1024).toFixed(1)} KB · ${p.name.endsWith(".mdn") ? "合璧安装包" : "Debian 包"}</div>
+      <div style="margin-top:8px;display:flex;gap:6px">
+        <a class="btn sm" href="/packages/${encodeURIComponent(p.name)}" download>下载</a>
+        <button class="btn sm" onclick="pkgInfo('${p.name}')">元数据</button>
+      </div></div>`).join("") || '<div class="hint">仓库为空，请上传安装包</div>';
+}
+async function uploadPkg(f) {
+  if (!f) return;
+  const fd = new FormData(); fd.append("file", f);
+  toast("正在上传 " + f.name + " …");
+  const r = await fetch("/api/packages/upload", { method: "POST", body: fd });
+  const j = await r.json();
+  if (!r.ok) return toast("上传失败：" + (j.detail || "未知错误"));
+  const m = j.meta;
+  toast(`上传成功：${m["package"] || f.name} v${m["version"] || "?"}（${m["size"]}）`);
+  await refresh(); loadPkgs();
+}
+function pkgInfo(name) {
+  openDlg("📦 安装包元数据 — " + name, `
+    <pre id="pkgmeta" style="font-size:12px;background:#f6f8fc;padding:14px;border-radius:8px;overflow:auto;max-height:300px">解析中…</pre>`, [{ label: "关闭", cls: "" }]);
+  fetch("/packages/" + encodeURIComponent(name)).then((r) => r.blob()).then(async (b) => {
+    $("#pkgmeta").textContent = "文件大小: " + b.size + " bytes\n（服务端已解析 dpkg-deb 元数据并记入日志）\n\n该包可直接被 hbpm 安装：\n  hbpm install " + name;
+  });
+}
+
+/* ---------- 日志 ---------- */
+async function pgLogs() {
+  await refresh();
+  $("#main").innerHTML = `<div class="pg-head"><h2>操作日志</h2><div class="d">商店后台全部操作审计记录</div></div>
+    <div class="panel">${STATS.events.map((e) => `<div class="ev"><span class="tag">${e.kind}</span><span>${e.message}</span>
+      <span class="ts" style="margin-left:auto">${new Date(e.ts * 1000).toLocaleString("zh-CN", { hour12: false })}</span></div>`).join("") || '<div class="hint">暂无日志</div>'}</div>`;
+}
+
+/* ---------- 弹窗 ---------- */
+function openDlg(title, body, btns) {
+  $("#dlg").innerHTML = `<div class="dh">${title}</div><div class="db">${body}</div><div class="df"></div>`;
+  const foot = $("#dlg .df");
+  (btns || [{ label: "关闭", cls: "" }]).forEach((b) => {
+    const el = document.createElement("button");
+    el.className = "btn " + (b.cls || ""); el.textContent = b.label;
+    el.onclick = () => b.fn ? b.fn() : closeDlg();
+    foot.appendChild(el);
+  });
+  $("#mask").classList.add("show");
+}
+function closeDlg() { $("#mask").classList.remove("show"); }
+$("#mask").onclick = (e) => { if (e.target.id === "mask") closeDlg(); };
+</script>
+</body>
+</html>

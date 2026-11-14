@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=HeBi Splash
+Description=合璧OS 开机动画主题
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/hebi-splash
+ScriptFile=/usr/share/plymouth/themes/hebi-splash/hebi-splash.script

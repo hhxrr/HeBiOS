@@ -1,0 +1,254 @@
+#!/bin/busybox sh
+# ============================================================
+# hebi-installer — 合璧OS 图形化安装向导 (dialog 全屏 TUI)
+# 流程: 欢迎 → 语言 → 用户协议 → 磁盘 → 分区与文件系统(格式化)
+#       → 手动分区(高级) → 用户账户 → 驱动 → 确认 → 安装 → 完成
+# 支持 BIOS + UEFI 双模启动的介质
+# 安装核心逻辑位于 /usr/lib/hebi-install-lib.sh (与网页安装器共用)
+#
+# 关于 dialog I/O: 不使用 --stdout + 命令替换 —— 那会使 dialog 的 stdout
+# 变成管道, dialog 1.3 会尝试打开输出 tty, 在无控制终端的环境(initramfs)
+# 下失败。改用 --output-fd 3 将结果写入临时文件, 屏幕输出保持走 stdout(tty)。
+# ============================================================
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export TERM=linux
+# UTF-8 locale: 使 ncursesw 进入 UTF-8 模式, 正确渲染中文与 Unicode 边框
+# (否则 curses 走 acsc 字符集切换, 在 Linux 控制台上会破坏中文显示)
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# ---------- 安装核心共享库 (分区/格式化/GRUB 双链/initramfs) ----------
+. /usr/lib/hebi-install-lib.sh
+# TUI 前端回调: 进度直接回显到 stdout, 由管道送入 dialog --gauge
+tui_pct() { echo "$1"; echo "$2"; }
+HB_PROGRESS_FN=tui_pct
+HB_FAIL_FILE=/tmp/hebi-inst-fail
+HB_RESULT_FILE=/tmp/hebi-inst-result
+
+BT="合璧OS HeBi OS 5.0 LTS (Jade) — 图形化安装向导"
+EULA=/usr/share/hebios/eula.txt
+ANS=/tmp/hebi-ans
+mkdir -p /var/log; : > $HB_LOG
+log() { echo "[$(date '+%H:%M:%S')] $*" >> $HB_LOG; }
+
+# ---------- 对话框色彩主题(合璧青) ----------
+mkdir -p /etc/hebios
+cat > /etc/hebios/dialogrc <<'THEME'
+screen_color = (CYAN,MAGENTA,ON)
+dialog_color = (BLACK,CYAN,OFF)
+title_color = (BLUE,WHITE,ON)
+border_color = (BLUE,WHITE,ON)
+button_active_color = (WHITE,BLUE,ON)
+button_inactive_color = (BLACK,WHITE,OFF)
+button_key_active_color = (WHITE,BLUE,ON)
+button_label_active_color = (WHITE,BLUE,ON)
+inputbox_color = (BLACK,WHITE,OFF)
+inputbox_border_color = (BLUE,WHITE,ON)
+menubox_color = (BLACK,WHITE,OFF)
+menubox_border_color = (BLUE,WHITE,ON)
+check_color = (BLACK,WHITE,OFF)
+check_selected_color = (BLUE,WHITE,ON)
+gauge_color = (BLUE,WHITE,ON)
+THEME
+export DIALOGRC=/etc/hebios/dialogrc
+
+# ---------- dialog 结果获取助手 ----------
+# 用法: ask --menu ... ; ANS 变量为结果, 返回 dialog 退出码
+# 用户按 Cancel/Esc 时 dialog 返回非0, 由调用方 `|| exit 0` 处理
+ask() {
+    : > $ANS
+    dialog --output-fd 3 "$@" 3>>$ANS
+}
+
+list_disks() {
+    awk '$4 ~ /^(sd[a-z]|vd[a-z]|nvme[0-9]n[0-9]|mmcblk[0-9])$/ {
+        base=$4; sub(/p?[0-9]+$/,"",base)
+        if(!seen[base]++){ sz=$3/1024/1024; printf "%s %.1fGB ", base, sz }
+    }' /proc/partitions
+}
+disk_size() { awk -v d="$1" '$4==d {printf "%.1f", $3/1024/1024}' /proc/partitions; }
+part_list() {
+    /usr/sbin/fdisk -l /dev/$1 2>/dev/null | grep -E "^/dev" | awk '{print "    "$1"  "$5"  "$6$7}' | head -6
+    [ -z "$(/usr/sbin/fdisk -l /dev/$1 2>/dev/null | grep -E '^/dev')" ] && echo "    (空 — 无分区表)"
+}
+
+# ==================== 0. 欢迎 ====================
+dialog --backtitle "$BT" --title " 欢迎使用 合璧OS " --infobox \
+"\n    合璧OS HeBi OS 5.0 LTS (Jade)\n\n    珠联璧合 — 融 Linux 内核，承 Windows 体验\n\n    正在初始化图形化安装程序 ..." 14 60
+/bin/busybox sleep 2
+
+# ==================== 1. 语言 ====================
+ask --backtitle "$BT" --title " 1/9 选择语言 " \
+  --menu "请选择安装过程中使用的语言:" 14 52 4 \
+  "zh_CN" "简体中文 (推荐)" \
+  "en_US" "English" \
+  "ja_JP" "日本語" \
+  "zh_TW" "繁體中文" || exit 0
+LANG_SEL=$(cat $ANS)
+log "语言: $LANG_SEL"
+
+# ==================== 2. 用户协议 ====================
+while :; do
+    dialog --backtitle "$BT" --title " 2/9 最终用户许可协议 (EULA) " \
+      --textbox "$EULA" 22 74 || exit 0
+    # --separate-output: 每项一行输出(dialog 1.3 默认输出不带引号,
+    # 不可用 '"eula"' 匹配); -qx 精确整行匹配, 避免部分命中
+    ask --separate-output --backtitle "$BT" --title " 2/9 用户协议 " \
+      --checklist "安装前请确认您已阅读并同意《合璧OS 最终用户许可协议》:\n\n  (协议已在上方完整显示，含安装风险告知与担保责任限制)" 12 70 2 \
+      "eula" "我已阅读、理解并同意本协议全部条款" off \
+      "risk" "我已知悉: 安装将格式化目标磁盘，数据永久丢失" off || exit 0
+    grep -qx eula $ANS && grep -qx risk $ANS && break
+    dialog --backtitle "$BT" --title " 需要同意协议 " --msgbox \
+"您必须同时勾选以下两项才能继续安装:\n\n  ☑ 我已阅读、理解并同意本协议全部条款\n  ☑ 我已知悉安装将格式化目标磁盘\n\n请重新确认。" 12 60
+done
+log "用户已同意 EULA"
+
+# ==================== 3. 磁盘选择 ====================
+DISKS=$(list_disks)
+if [ -z "$DISKS" ]; then
+    dialog --backtitle "$BT" --title " 未找到磁盘 " --msgbox \
+"未检测到可安装磁盘。\n\n请检查:\n  1. 虚拟机磁盘控制器 (virtio / SATA / NVMe)\n  2. 物理硬盘数据线与电源\n  3. 进入「固件修复模式」排查" 12 52
+    exit 1
+fi
+ask --backtitle "$BT" --title " 3/9 选择安装磁盘 " --menu \
+"选择要安装合璧OS 的磁盘:\n\n（该磁盘将被分区并格式化，原有数据全部删除）" 18 60 6 $DISKS || exit 0
+TARGET=$(cat $ANS)
+[ -z "$TARGET" ] && exit 1
+log "目标磁盘: $TARGET ($(disk_size $TARGET) GB)"
+
+dialog --backtitle "$BT" --title " 3/9 磁盘详情 " --yesno \
+"目标磁盘: /dev/$TARGET  ($(disk_size $TARGET) GB)\n\n现有分区表:\n$(part_list $TARGET)\n\n继续将进入分区设置。是否使用此磁盘？" 20 62 || exit 0
+
+# ==================== 4. 分区与文件系统 ====================
+ask --backtitle "$BT" --title " 4/9 分区与文件系统 " \
+  --menu "选择分区方式:" 16 62 4 \
+  "auto"     "自动分区 — 使用整个磁盘 (推荐)" \
+  "auto_uefi" "自动分区 — UEFI 方案 (ESP 512M + 根分区)" \
+  "manual"   "手动分区 — 自定义分区表 (高级)" \
+  "lvm"      "自动分区 + LVM 逻辑卷 (可在线扩展)" || exit 0
+PART_MODE=$(cat $ANS)
+
+FS_TYPE=ext4
+ESP_SIZE=512
+SWAP_SIZE=2048
+ROOT_SIZE=""
+ROOT_ARG=""
+if [ "$PART_MODE" != "manual" ]; then
+    ask --backtitle "$BT" --title " 4/9 文件系统 " \
+      --menu "选择根分区文件系统 (将被格式化):" 14 58 4 \
+      "ext4"  "ext4 — 稳定通用 (推荐)" \
+      "btrfs" "btrfs — 支持快照与压缩" \
+      "xfs"   "xfs — 大文件高性能" \
+      "ext2"  "ext2 — 无日志 (老旧硬件)" || exit 0
+    FS_TYPE=$(cat $ANS)
+    ask --backtitle "$BT" --title " 4/9 交换分区 " \
+      --inputbox "交换分区 (swap) 大小 (MB):\n\n建议: 内存 ≤ 2GB 时设为 2048" 12 52 "2048" || exit 0
+    SWAP_SIZE=$(cat $ANS)
+    # 输入校验: 空值或非数字回落默认 2048, 避免生成非法 fdisk 参数
+    case "$SWAP_SIZE" in ''|*[!0-9]*) SWAP_SIZE=2048 ;; esac
+    [ "$SWAP_SIZE" -lt 128 ] 2>/dev/null && SWAP_SIZE=2048
+fi
+
+if [ "$PART_MODE" = "manual" ]; then
+    dialog --backtitle "$BT" --title " 4/9 手动分区 " --msgbox \
+"手动分区模式\n\n将为您执行以下操作:\n  1. 创建 GPT 分区表\n  2. 划分: EFI系统分区(512M) + BIOS引导分区(2M) + 交换分区 + 根分区\n  3. 全部使用选定文件系统格式化\n\n如需完全自由的分区操作，请退出安装器，\n在体验模式中使用 fdisk / cfdisk 工具后重新开始。\n\n点击 OK 进入分区方案设置。" 16 62
+    ask --backtitle "$BT" --title " 4/9 根分区大小 " \
+      --inputbox "根分区 (/) 大小，可用 MB 或百分比:\n\n示例: 30720 (30GB) 或 100%" 12 56 "100%" || exit 0
+    ROOT_SIZE=$(cat $ANS)
+    case "$ROOT_SIZE" in
+        ""|100%|*%|*[!0-9]*) ROOT_ARG="" ;;          # 剩余全部空间
+        *) ROOT_ARG="+${ROOT_SIZE}M" ;;               # 指定 MB
+    esac
+fi
+
+# 格式化二次确认（不可跳过）
+dialog --backtitle "$BT" --title " ⚠ 格式化警告 " --colors --yesno \
+"\Z1⚠⚠⚠  格式化警告  ⚠⚠⚠\Z0\n\n即将对以下对象执行分区与\Z1格式化\Z0:\n\n    磁盘:     /dev/$TARGET ($(disk_size $TARGET) GB)\n    方式:     $PART_MODE\n    文件系统: $FS_TYPE\n    交换分区: ${SWAP_SIZE} MB\n\n该磁盘上的\Z1所有数据将被永久删除且不可恢复\Z0！\n\n确定继续吗？" 20 60 || exit 0
+
+# ==================== 5. 用户账户 ====================
+ask --backtitle "$BT" --title " 5/9 用户账户 " \
+  --inputbox "请输入用户名 (管理员):" 12 50 "hebios" || exit 0
+USERNAME=$(cat $ANS)
+while :; do
+    ask --backtitle "$BT" --title " 5/9 用户账户 " --passwordbox "请输入密码:" 12 50 "" || exit 0
+    P1=$(cat $ANS)
+    ask --backtitle "$BT" --title " 5/9 用户账户 " --passwordbox "请再次输入密码:" 12 50 "" || exit 0
+    P2=$(cat $ANS)
+    [ "$P1" = "$P2" ] && [ -n "$P1" ] && break
+    dialog --backtitle "$BT" --title " 密码不匹配 " --msgbox "两次输入的密码不一致或为空，请重新输入。" 8 44
+done
+ask --backtitle "$BT" --title " 5/9 用户账户 " \
+  --inputbox "计算机名称:" 12 50 "hebios-pc" || exit 0
+HOSTNAME=$(cat $ANS)
+HB_PASSWORD=$P1
+log "用户: $USERNAME 主机: $HOSTNAME"
+
+# ==================== 6. 驱动 ====================
+ask --backtitle "$BT" --title " 6/9 通用驱动 " \
+  --checklist "选择随系统安装的通用驱动:\n(可在安装后于「驱动管理器」中增删)" 16 70 6 \
+  "gpu"   "显卡驱动 — Virtio/VMware/通用帧缓冲" on \
+  "net"   "网卡驱动 — Intel/Realtek/virtio-net" on \
+  "audio" "音频驱动 — Intel HDA/AC97" on \
+  "usb"   "USB 驱动 — xHCI/EHCI/大容量存储" on \
+  "print" "打印驱动 — CUPS/IPP/AirPrint" off \
+  "bt"    "蓝牙驱动 — BlueZ 5.x" off || exit 0
+DRIVERS=$(cat $ANS)
+log "驱动: $DRIVERS"
+
+# ==================== 7. 确认 ====================
+dialog --backtitle "$BT" --title " 7/9 确认安装 " --yesno \
+"════════ 安装信息确认 ════════\n\n  目标磁盘:  /dev/$TARGET ($(disk_size $TARGET) GB)\n  分区方式:  $PART_MODE\n  文件系统:  $FS_TYPE\n  交换分区:  ${SWAP_SIZE} MB\n  用户名:    $USERNAME (管理员)\n  计算机名:  $HOSTNAME\n\n⚠ /dev/$TARGET 上所有数据将被永久删除\n\n开始安装吗？" 22 60 || exit 0
+
+# ==================== 8. 安装(真实执行) ====================
+# 核心逻辑见 /usr/lib/hebi-install-lib.sh hebi_do_install();
+# 进度经 tui_pct 回显到 stdout, 由管道送入 dialog --gauge 实时显示。
+rm -f /tmp/hebi-inst-fail
+(
+    hebi_do_install
+) | dialog --backtitle "$BT" --title " 8/9 正在安装合璧OS " --gauge "准备安装 ..." 14 64 0
+
+# 安装失败检测: 共享库通过标志文件 $HB_FAIL_FILE 传出失败原因。
+# (旧实现中子 shell exit 1 不会阻止父 shell 继续显示"安装成功" ——
+#  曾出现分区表根本没写盘却报安装完成的假成功)
+if [ -s $HB_FAIL_FILE ]; then
+    sync
+    dialog --backtitle "$BT" --title " ✗ 安装失败 " --msgbox \
+"安装过程中止:
+
+  $(cat $HB_FAIL_FILE)
+
+详细日志已写入 /var/log/hebi-install.log。
+请检查目标磁盘与分区参数后重新开始安装。" 14 56
+    exit 1
+fi
+
+# 读取安装结果 (共享库写入的 KEY=VALUE 文件)
+ROOT_PART=""; ESP_PART=""; FS_TYPE=""; BOOT_NOTE=""
+[ -f $HB_RESULT_FILE ] && while IFS='=' read -r k v; do
+    case "$k" in
+        ROOT_PART) ROOT_PART=$v ;;
+        ESP_PART)  ESP_PART=$v ;;
+        FS_TYPE)   FS_TYPE=$v ;;
+        BOOT_NOTE) BOOT_NOTE=$v ;;
+    esac
+done < $HB_RESULT_FILE
+
+# ==================== 9. 完成 ====================
+dialog --backtitle "$BT" --title " 9/9 安装完成 " --msgbox \
+"╔══════════════════════════════════════════╗
+║   恭喜! 合璧OS 安装成功                    ║
+╚══════════════════════════════════════════╝
+
+  安装位置:  /dev/$ROOT_PART ($FS_TYPE)
+  用户:      $USERNAME
+  主机名:    $HOSTNAME
+  引导模式:  $BOOT_NOTE
+
+后续步骤:
+  1. 取出安装介质 (ISO)
+  2. 点击 OK 重启计算机
+  3. 从硬盘启动合璧OS
+
+如需修复系统引导，可从安装介质选择
+「固件修复模式」。" 20 58
+sync
+reboot -f 2>/dev/null || echo b > /proc/sysrq-trigger

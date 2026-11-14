@@ -1,0 +1,17 @@
+# ===== 构建缓存（体积大，非源码）=====
+.build/
+
+# ===== GitHub 单文件硬上限 100MB，以下超大包走 Release 资产发布 =====
+# 见仓库 Releases: Hebi4.0.zip / Hebi5.0.zip / hebi5.1beta.zip
+Hebi4.0.zip
+Hebi5.0.zip
+hebi5.1beta.zip
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 编辑器
+*.swp
+.DS_Store

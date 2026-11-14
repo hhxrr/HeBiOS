@@ -1,0 +1,6 @@
+#!/bin/busybox sh
+# 合璧OS 关机脚本
+echo "合璧OS HeBi OS 正在关机 ..."
+sync
+umount -a -r 2>/dev/null
+exit 0

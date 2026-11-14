@@ -1,0 +1,408 @@
+#!/bin/busybox sh
+# hbpm — 合璧OS 包管理器 (HeBi Package Manager)
+# 支持格式: .deb (Debian 原生) / .mdn (合璧安装包, 即 .deb 改后缀)
+#           .exe / .msi (通过 Wine 兼容层安装)
+# 安装来源: 本地文件 / http(s):// URL 直装 / 局域网远程源 (裸包名)
+# 远程源配置: /etc/hbpm.conf   (HB_REPO=http://服务器IP:8888)
+#            由合璧商店后台 (hebi-store-admin) 或任意 HTTP 静态目录提供
+# 安装引擎: 自研 mini-dpkg (busybox ar + tar 直解, 不依赖 dpkg 二进制)
+#           说明: busybox 自带的 dpkg applet 无法解析本系安装包
+#           (曾报 can't extract control file), 故包解包/清单/维护脚本
+#           均由 hbpm 自行完成; 系统若另有真 dpkg 仍可正常工作
+# 用法: hbpm <install|remove|list|search|info|repo> [参数...]
+
+HB_ROOT=${HB_ROOT:-/}          # 安装根, HB_ROOT=/tmp/testroot 可装到指定目录
+HBDB=${HB_ROOT%/}/var/lib/hbpm # 数据库随安装根走 (HB_ROOT=/ 时为 /var/lib/hbpm)
+HBCONF=/etc/hbpm.conf
+mkdir -p $HBDB $HBDB/files $HBDB/ctl
+[ -f $HBCONF ] && . $HBCONF
+
+usage() {
+    cat <<'EOF'
+hbpm — 合璧OS 包管理器
+  hbpm install <文件|URL|包名>          安装软件包
+                                        本地文件 / http(s):// 直装 /
+                                        裸包名(需先配置远程源)
+  hbpm remove  <软件名>                 卸载软件
+  hbpm list                            已安装软件列表
+  hbpm search <关键字>                  搜索软件(本地+远程源)
+  hbpm info   <文件.deb|.mdn|URL>       查看安装包信息
+  hbpm repo                            查看当前远程源
+  hbpm repo set <URL>                  设置远程源 (写入 /etc/hbpm.conf)
+  hbpm repo del                        删除远程源配置
+
+远程源示例:
+  hbpm repo set http://192.168.1.5:8888   # 指向局域网内的合璧商店后台
+  hbpm install logo-lab                    # 从远程源自动查找并安装
+
+环境变量:
+  HB_ROOT=/tmp/testroot  将包装到指定根目录 (默认 /)
+EOF
+}
+
+[ $# -lt 1 ] && { usage; exit 1; }
+CMD=$1; shift
+
+# ---------------------------------------------------------------- 远程源工具
+# URL 去掉 ?query 后的类型后缀
+url_ext() {
+    u=$1
+    case "$u" in *\?*) u=${u%%\?*} ;; esac
+    case "$u" in
+        *.deb) echo deb ;; *.mdn) echo mdn ;;
+        *.exe) echo exe ;; *.msi) echo msi ;;
+        *) echo "" ;;
+    esac
+}
+
+# busybox wget (standalone shell 下优先执行 applet) 先解析 IPv6(::1) 且不
+# 回退 IPv4, 连接 localhost 服务器必失败; 规范化为 127.0.0.1 可彻底规避
+# (对 GNU wget 同样无害; 局域网 IP 地址无 DNS/IPv6 歧义, 不受影响)
+hb_norm_url() {
+    printf '%s' "$1" | sed 's|://localhost\([:/]\)|://127.0.0.1\1|'
+}
+
+# hb_fetch <URL> <输出文件>: 下载且文件非空则成功
+hb_fetch() {
+    wget -q -O "$2" "$(hb_norm_url "$1")" 2>/dev/null && [ -s "$2" ]
+}
+
+# repo_search <关键字>: 远程源搜索 (名称/描述/slug), 输出 "名称<TAB>包文件"
+# 注: 查询走全量下载 + 本地 grep 过滤, 不用 ?q= 参数 —— busybox wget
+#     不接受含原始 UTF-8 字节的 URL (中文关键字会静默失败)
+repo_search() {
+    [ -z "$HB_REPO" ] && return 1
+    command -v wget >/dev/null 2>&1 || return 1
+    tmp=/tmp/hbpm-api.$$
+    hb_fetch "$HB_REPO/api/apps" "$tmp" || { rm -f "$tmp"; return 1; }
+    # sed 分行后末行可能无换行符, while read 会提前 EOF 丢结果;
+    # 末尾补一个空行 (被下方 case 过滤) 保证全部记录被处理
+    { sed 's/},{/}\n{/g' "$tmp"; echo; } | while read -r line; do
+        case "$line" in *'"name":'*) ;; *) continue ;; esac
+        printf '%s' "$line" | grep -qi -- "$1" || continue
+        n=$(printf '%s' "$line" | grep -o '"name":"[^"]*"' | head -1 | sed 's/^"name":"//;s/"$//')
+        p=$(printf '%s' "$line" | grep -o '"pkg_file":"[^"]*"' | head -1 | sed 's/^"pkg_file":"//;s/"$//')
+        [ -n "$n" ] && [ -n "$p" ] && printf '%s\t%s\n' "$n" "$p"
+    done
+    rm -f "$tmp"
+}
+
+# repo_pkg_match <关键字>: 远程包目录模糊匹配, 输出包文件名
+# (logo-lab → logo-lab_0.9.5_amd64.mdn)
+repo_pkg_match() {
+    [ -z "$HB_REPO" ] && return 1
+    command -v wget >/dev/null 2>&1 || return 1
+    tmp=/tmp/hbpm-pkgs.$$
+    hb_fetch "$HB_REPO/api/packages" "$tmp" || { rm -f "$tmp"; return 1; }
+    grep -o '"name":"[^"]*"' "$tmp" | sed 's/^"name":"//;s/"$//' | grep -- "$1" | head -1
+    rm -f "$tmp"
+}
+
+# ---------------------------------------------------------------- 安装引擎
+# hb_unpack <deb文件> [来源]: mini-dpkg 安装, 记录文件清单/control/维护脚本
+hb_unpack() {
+    deb=$1; src=${2:-$1}
+    wd=/tmp/hbpm-unpack.$$
+    rm -rf "$wd"; mkdir -p "$wd" || return 1
+    ( cd "$wd" && busybox ar x "$deb" ) 2>/dev/null || \
+        { echo "hbpm: 无法解包 (非 ar 归档?) $deb"; rm -rf "$wd"; return 1; }
+    [ -s "$wd/debian-binary" ] || \
+        { echo "hbpm: 不是有效的 Debian 安装包"; rm -rf "$wd"; return 1; }
+    ctl_tar=$(ls "$wd"/control.tar.* 2>/dev/null | head -1)
+    data_tar=$(ls "$wd"/data.tar.* 2>/dev/null | head -1)
+    [ -n "$ctl_tar" ] && [ -n "$data_tar" ] || \
+        { echo "hbpm: 包内缺少 control/data 成员"; rm -rf "$wd"; return 1; }
+    case "$ctl_tar" in
+        *.gz) : ;;
+        *) echo "hbpm: control 成员为 $(basename "$ctl_tar" | sed 's/.*\.//') 压缩, 仅支持 gzip"; rm -rf "$wd"; return 1 ;;
+    esac
+    case "$data_tar" in
+        *.gz) : ;;
+        *) echo "hbpm: data 成员为 $(basename "$data_tar" | sed 's/.*\.//') 压缩, 仅支持 gzip"; rm -rf "$wd"; return 1 ;;
+    esac
+
+    # 1) 解 control 元数据
+    mkdir -p "$wd/ctl"
+    tar -xzf "$ctl_tar" -C "$wd/ctl" 2>/dev/null || \
+        { echo "hbpm: control 成员解压失败"; rm -rf "$wd"; return 1; }
+    [ -s "$wd/ctl/control" ] || \
+        { echo "hbpm: 包内无 control 文件"; rm -rf "$wd"; return 1; }
+    pkg=$(sed -n 's/^Package:[[:space:]]*//p' "$wd/ctl/control" | head -1)
+    [ -n "$pkg" ] || { echo "hbpm: control 缺少 Package 字段"; rm -rf "$wd"; return 1; }
+
+    echo "hbpm: 正在安装 $pkg ..."
+    # 2) 记录文件清单 (先列后解, 便于卸载)
+    tar -tzf "$data_tar" > "$HBDB/files/$pkg" 2>/dev/null || \
+        { echo "hbpm: data 清单读取失败"; rm -rf "$wd"; return 1; }
+    # 3) 解数据到安装根
+    tar -xzf "$data_tar" -C "$HB_ROOT" 2>/dev/null || \
+        { echo "hbpm: 数据解包失败 (HB_ROOT=$HB_ROOT)"; rm -f "$HBDB/files/$pkg"; rm -rf "$wd"; return 1; }
+    # 4) 留存 control 与维护脚本 (卸载时执行 prerm)
+    rm -rf "$HBDB/ctl/$pkg"; mkdir -p "$HBDB/ctl/$pkg"
+    cp "$wd/ctl/control" "$HBDB/ctl/$pkg/" 2>/dev/null
+    for m in postinst prerm; do
+        [ -f "$wd/ctl/$m" ] && cp "$wd/ctl/$m" "$HBDB/ctl/$pkg/" && chmod +x "$HBDB/ctl/$pkg/$m"
+    done
+    # 5) 执行 postinst (dpkg 约定: 传 configure)
+    if [ -f "$HBDB/ctl/$pkg/postinst" ]; then
+        if [ "$HB_ROOT" = "/" ]; then
+            sh "$HBDB/ctl/$pkg/postinst" configure >/dev/null 2>&1
+        else
+            chroot "$HB_ROOT" /bin/sh "./var/lib/hbpm/ctl/$pkg/postinst" configure >/dev/null 2>&1 || \
+                echo "hbpm: (警告) postinst 在 HB_ROOT=$HB_ROOT 内执行失败, 已跳过"
+        fi
+    fi
+    # 6) 记录安装来源
+    printf '%s|%s\n' "$pkg" "$src" >> $HBDB/installed
+    echo "hbpm: ✓ $pkg 安装完成 (来源: $src)"
+    rm -rf "$wd"
+    return 0
+}
+
+# hb_remove <包名>: 按清单卸载 (prerm → 逆序删文件 → 清记录)
+hb_remove() {
+    pkg=$1
+    [ -f "$HBDB/ctl/$pkg/control" ] || \
+        { echo "hbpm: '$pkg' 不是通过 hbpm 安装的 (或已卸载)"; return 1; }
+    # prerm (dpkg 约定: 传 remove)
+    if [ -f "$HBDB/ctl/$pkg/prerm" ]; then
+        if [ "$HB_ROOT" = "/" ]; then
+            sh "$HBDB/ctl/$pkg/prerm" remove >/dev/null 2>&1
+        else
+            chroot "$HB_ROOT" /bin/sh "./var/lib/hbpm/ctl/$pkg/prerm" remove >/dev/null 2>&1 || true
+        fi
+    fi
+    # 逆序删除文件清单 (目录项最后统一清理)
+    if [ -f "$HBDB/files/$pkg" ]; then
+        tac "$HBDB/files/$pkg" 2>/dev/null | while read -r fp; do
+            case "$fp" in */) continue ;; esac          # 目录项跳过
+            rm -f "$HB_ROOT/$fp" 2>/dev/null
+        done
+        # 清理空目录 (逆序)
+        grep '/$' "$HBDB/files/$pkg" 2>/dev/null | tac | while read -r dp; do
+            rmdir "$HB_ROOT/$dp" 2>/dev/null
+        done
+    fi
+    rm -rf "$HBDB/files/$pkg" "$HBDB/ctl/$pkg"
+    if [ -f $HBDB/installed ]; then
+        grep -v "^$pkg|" $HBDB/installed > $HBDB/installed.tmp 2>/dev/null
+        mv $HBDB/installed.tmp $HBDB/installed
+    fi
+    echo "hbpm: ✓ $pkg 已卸载"
+    return 0
+}
+
+# hb_install_url <URL>: 下载后安装
+hb_install_url() {
+    ext=$(url_ext "$1")
+    if [ -z "$ext" ]; then
+        echo "hbpm: URL 不支持的类型 (仅 .deb/.mdn/.exe/.msi): $1"
+        return 1
+    fi
+    tmp=/tmp/hbpm-dl-$$.$ext
+    echo "hbpm: 正在从远程下载 $1 ..."
+    if ! hb_fetch "$1" "$tmp"; then
+        echo "hbpm: 下载失败或文件为空: $1"
+        rm -f "$tmp"
+        return 1
+    fi
+    hb_install_file "$tmp" "$1"
+    rc=$?
+    rm -f "$tmp"
+    return $rc
+}
+
+# hb_install_file <文件> [来源记录]: 按格式安装本地文件
+hb_install_file() {
+    f=$1; src=${2:-$f}
+    case "$f" in
+        *.deb|*.mdn)
+            hb_unpack "$f" "$src"
+            ;;
+        *.exe|*.msi)
+            if command -v wine >/dev/null 2>&1; then
+                echo "hbpm: 通过 Wine 兼容层安装 Windows 程序 $f ..."
+                wine "$f" /S && echo "$src" >> $HBDB/installed
+            else
+                echo "hbpm: 未安装 Wine 兼容层, 请先安装 wine 通用兼容驱动"
+                echo "hbpm: (系统设置 → 设备 → 驱动 → Windows 兼容层)"
+            fi
+            ;;
+        *)
+            echo "hbpm: 不支持的安装包格式: $f"
+            return 1
+            ;;
+    esac
+}
+
+# hb_install_name <裸包名>: 远程源查找并安装
+hb_install_name() {
+    if [ -z "$HB_REPO" ]; then
+        echo "hbpm: '$1' 不是本地文件, 且未配置远程源"
+        echo "hbpm: 请先执行: hbpm repo set http://<商店后台IP>:8888"
+        return 1
+    fi
+    if ! command -v wget >/dev/null 2>&1; then
+        echo "hbpm: 需要 wget 支持远程源, 请先安装 (busybox wget)"
+        return 1
+    fi
+    # 1) 应用索引搜索 (名称/描述/slug)
+    hit=$(repo_search "$1" | head -1)
+    if [ -n "$hit" ]; then
+        name=${hit%%	*}; pkg=${hit#*	}
+        echo "hbpm: 远程源匹配: $name → $pkg"
+        hb_install_url "$HB_REPO/packages/$pkg"
+        return $?
+    fi
+    # 2) 包目录模糊匹配 (logo-lab → logo-lab_0.9.5_amd64.mdn)
+    cand=$(repo_pkg_match "$1")
+    if [ -n "$cand" ]; then
+        echo "hbpm: 远程源匹配包文件: $cand"
+        hb_install_url "$HB_REPO/packages/$cand"
+        return $?
+    fi
+    # 3) 依次尝试常见扩展名
+    for ext in deb mdn; do
+        tmp=/tmp/hbpm-dl-$$.$ext
+        if hb_fetch "$HB_REPO/packages/$1.$ext" "$tmp"; then
+            hb_install_file "$tmp" "$HB_REPO/packages/$1.$ext"
+            rc=$?
+            rm -f "$tmp"
+            return $rc
+        fi
+        rm -f "$tmp"
+    done
+    echo "hbpm: 远程源 $HB_REPO 上未找到 '$1'"
+    echo "hbpm: 可用 'hbpm search $1' 搜索, 或访问 $HB_REPO 浏览应用"
+    return 1
+}
+
+case "$CMD" in
+    install|i)
+        [ $# -lt 1 ] && { usage; exit 1; }
+        for f in "$@"; do
+            case "$f" in
+                http://*|https://*)
+                    hb_install_url "$f"
+                    ;;
+                */*)
+                    [ -f "$f" ] || { echo "hbpm: 找不到文件 $f"; continue; }
+                    hb_install_file "$f"
+                    ;;
+                *)
+                    [ -f "$f" ] && hb_install_file "$f" || hb_install_name "$f"
+                    ;;
+            esac
+        done
+        ;;
+    remove|r)
+        [ -z "$1" ] && { echo "用法: hbpm remove <软件名>"; exit 1; }
+        hb_remove "$1"
+        ;;
+    list|l)
+        echo "== hbpm 已安装 =="
+        if [ -d $HBDB/ctl ]; then
+            for c in $HBDB/ctl/*/control; do
+                [ -f "$c" ] || continue
+                n=$(sed -n 's/^Package:[[:space:]]*//p' "$c" | head -1)
+                v=$(sed -n 's/^Version:[[:space:]]*//p' "$c" | head -1)
+                printf '  %-24s %s\n' "$n" "$v"
+            done
+        fi
+        echo "== 安装来源记录 =="
+        cat $HBDB/installed 2>/dev/null
+        if [ -x /usr/bin/dpkg ]; then
+            echo "== 系统 dpkg 已安装 (前 20) =="
+            /usr/bin/dpkg -l 2>/dev/null | awk '/^ii/{print "  " $2, $3}' | head -20
+        fi
+        ;;
+    search|s)
+        [ -z "$1" ] && { echo "用法: hbpm search <关键字>"; exit 1; }
+        echo "== hbpm 已安装 =="
+        for c in $HBDB/ctl/*/control; do
+            [ -f "$c" ] || continue
+            n=$(sed -n 's/^Package:[[:space:]]*//p' "$c" | head -1)
+            d=$(sed -n 's/^Description:[[:space:]]*//p' "$c" | head -1)
+            echo "$n $d" | grep -i "$1" && echo "  (已安装)"
+        done
+        echo "== 随盘离线包 (/opt/hebios/packages) =="
+        ls /opt/hebios/packages 2>/dev/null | grep -i "$1"
+        if [ -n "$HB_REPO" ]; then
+            echo "== 远程源 $HB_REPO =="
+            repo_search "$1" | while IFS='	' read -r n p; do
+                printf '  %-28s %s\n' "$n" "$p"
+            done
+            repo_pkg_match "$1" | sed 's/^/  (包文件) /'
+        fi
+        ;;
+    info)
+        case "$1" in
+            *.deb|*.mdn)
+                wd=/tmp/hbpm-info.$$
+                rm -rf "$wd"; mkdir -p "$wd"
+                ( cd "$wd" && busybox ar x "$1" ) 2>/dev/null || { echo "hbpm: 无法解包 $1"; rm -rf "$wd"; exit 1; }
+                ctl_tar=$(ls "$wd"/control.tar.* 2>/dev/null | head -1)
+                if [ -n "$ctl_tar" ]; then
+                    case "$ctl_tar" in
+                        *.gz) tar -xzf "$ctl_tar" -C "$wd" 2>/dev/null && cat "$wd/control" ;;
+                        *) echo "hbpm: 仅支持 gzip 压缩的 control 成员" ;;
+                    esac
+                else
+                    echo "hbpm: 包内无 control 成员"
+                fi
+                rm -rf "$wd"
+                ;;
+            http://*|https://*)
+                ext=$(url_ext "$1")
+                [ -n "$ext" ] || { echo "hbpm: URL 不支持的类型"; exit 1; }
+                tmp=/tmp/hbpm-info-$$.$ext
+                if hb_fetch "$1" "$tmp"; then
+                    wd=/tmp/hbpm-infod.$$
+                    rm -rf "$wd"; mkdir -p "$wd"
+                    ( cd "$wd" && busybox ar x "$tmp" ) 2>/dev/null || echo "hbpm: 无法解包"
+                    ctl_tar=$(ls "$wd"/control.tar.* 2>/dev/null | head -1)
+                    [ -n "$ctl_tar" ] && case "$ctl_tar" in
+                        *.gz) tar -xzf "$ctl_tar" -C "$wd" 2>/dev/null && cat "$wd/control" ;;
+                    esac
+                    rm -rf "$wd"
+                else
+                    echo "hbpm: 下载失败: $1"
+                fi
+                rm -f "$tmp"
+                ;;
+            *) echo "hbpm: 不支持的信息查询格式" ;;
+        esac
+        ;;
+    repo)
+        case "$1" in
+            set)
+                [ -z "$2" ] && { echo "用法: hbpm repo set <URL>"; exit 1; }
+                echo "HB_REPO=$2" > $HBCONF 2>/dev/null || {
+                    echo "hbpm: 无法写入 $HBCONF (需要 root 权限)"; exit 1; }
+                echo "✓ 远程源已设置: $2 (保存于 $HBCONF)"
+                echo "  现在可以: hbpm search <关键字> / hbpm install <包名>"
+                ;;
+            del)
+                rm -f $HBCONF 2>/dev/null || {
+                    echo "hbpm: 无法删除 $HBCONF (需要 root 权限)"; exit 1; }
+                echo "✓ 远程源配置已删除"
+                ;;
+            ""|show|*)
+                if [ -n "$HB_REPO" ]; then
+                    echo "当前远程源: $HB_REPO"
+                    if command -v wget >/dev/null 2>&1 && \
+                       wget -q -O /dev/null "$(hb_norm_url "$HB_REPO/api/packages")" 2>/dev/null; then
+                        echo "状态: ✓ 在线 (API 可访问)"
+                    else
+                        echo "状态: ✗ 不可达 (检查网络或源地址)"
+                    fi
+                else
+                    echo "未配置远程源"
+                    echo "设置方法: hbpm repo set http://<商店后台IP>:8888"
+                fi
+                ;;
+        esac
+        ;;
+    *)
+        usage; exit 1 ;;
+esac

@@ -1,0 +1,94 @@
+#!/bin/busybox sh
+# ============================================================
+# hebi-webinst — 合璧OS HTML 网页安装器 (busybox httpd + CGI)
+# 入口: grub 菜单「网页安装」→ cmdline hebi.webinst=1 → rcS 调本脚本
+# 局域网内任意设备的浏览器访问 http://<本机IP>:8080
+# 即可完成整套图形化安装 (与 TUI 安装器同一套安装核心)
+# ============================================================
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+. /usr/lib/hebi-install-lib.sh
+
+PORT=${HB_WEBINST_PORT:-8080}
+HTDOCS=/usr/share/hebios/webinst
+RUN=/tmp/hebi-webinst
+mkdir -p $RUN
+
+# ---------- 控制台 + 串口输出 ----------
+con() {
+    echo "$*"
+    echo "$*" > /dev/ttyS0 2>/dev/null
+    echo "$*" > /dev/console 2>/dev/null
+}
+
+# ---------- 网络: 等待 DHCP (QEMU 默认 10.0.2.15; 真机由路由器分配) ----------
+# 注意: Linux 网络接口默认是 DOWN 状态, 必须先 ifconfig up (含 lo), 否则
+# udhcpc 报 "sendto: Network is down" 并进入无限重试循环 (-n/-q 都无法退出)。
+# Ubuntu busybox 的 udhcpc 默认脚本路径是 /etc/udhcpc/default.script,
+# 这里同时显式 -s 指定, 双保险。timeout 包裹作为第三道保险。
+get_ip() {
+    local a=""
+    for i in $(ls /sys/class/net 2>/dev/null); do
+        a=$(ifconfig $i 2>/dev/null | grep 'inet addr' | head -1 | sed 's/.*inet addr:\([0-9.]*\).*/\1/')
+        [ -n "$a" ] && [ "$i" != "lo" ] && { printf '%s' "$a"; return; }
+    done
+    printf '%s' ""
+}
+con ""
+con "========================================================"
+con "   合璧OS HeBi OS 5.0 LTS (Jade) — 网页安装模式"
+con "   HTML Web Installer · busybox httpd + CGI"
+con "========================================================"
+con " 正在配置网络 (DHCP) ..."
+for i in $(ls /sys/class/net 2>/dev/null); do
+    ifconfig $i up 2>/dev/null
+done
+# 每个非 lo 接口最多 3 轮 DHCP 尝试 (真机上首轮可能因广播竞争失败;
+# QEMU user 网络第一轮即可成功)。每轮 timeout 15s 封顶, 总耗时 ≤ 45s+
+IP=""
+try=0
+while [ -z "$IP" ] && [ $try -lt 3 ]; do
+    for i in $(ls /sys/class/net 2>/dev/null); do
+        [ "$i" = "lo" ] && continue
+        timeout 15 udhcpc -i $i -s /etc/udhcpc/default.script -n 2>/dev/null
+    done
+    IP=$(get_ip)
+    [ -n "$IP" ] && break
+    try=$((try+1))
+    /bin/busybox sleep 1
+done
+# rcS 里的后台 udhcpc 守护进程可能稍后拿到租约, 再等最多 10 秒
+i=0
+while [ -z "$IP" ] && [ $i -lt 10 ]; do
+    /bin/busybox sleep 1
+    IP=$(get_ip)
+    i=$((i+1))
+done
+if [ -z "$IP" ]; then
+    IP="10.0.2.15"
+    con " (未获取到 DHCP 地址, 使用默认地址 $IP)"
+    con " ---- 接口状态 (诊断) ----"
+    ifconfig 2>/dev/null | while IFS= read -r l; do con "   $l"; done
+    con " ------------------------"
+fi
+
+# ---------- 启动 httpd (CGI: $HTDOCS/cgi-bin/) ----------
+/bin/busybox httpd -h $HTDOCS -p $PORT
+if [ $? -ne 0 ]; then
+    con " ✗ httpd 启动失败 (端口 $PORT 被占用?)"
+    con " 请改用 TUI 安装: 从固件/介质选择「图形化安装」菜单项"
+    exec /bin/busybox sh
+fi
+
+con ""
+con "  ✓ 网页安装服务已启动"
+con "    本机地址:  http://$IP:$PORT"
+con ""
+con "  请在局域网内任意设备的浏览器中打开上述地址，"
+con "  按向导步骤完成 合璧OS 的图形化安装。"
+con "  (安装将格式化所选磁盘，请谨慎选择目标磁盘)"
+con ""
+con "  WEBINST-READY"
+con "========================================================"
+
+# 常驻不退出 (rcS exec 了本脚本; 退出会掉线并落入体验模式)
+while :; do /bin/busybox sleep 3600; done

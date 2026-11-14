@@ -1,0 +1,11 @@
+NAME="HeBi OS"
+VERSION="5.0 (Jade)"
+ID=hebios
+ID_LIKE="ubuntu debian windows"
+PRETTY_NAME="HeBi OS 5.0 LTS (Jade)"
+VERSION_ID="5.0"
+VERSION_CODENAME=jade
+HOME_URL="https://hebios.dev"
+SUPPORT_URL="https://hebios.dev/support"
+BUG_REPORT_URL="https://hebios.dev/issues"
+LOGO=hebios-logo

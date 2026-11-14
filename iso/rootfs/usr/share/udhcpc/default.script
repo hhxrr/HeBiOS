@@ -1,0 +1,16 @@
+#!/bin/busybox sh
+# 合璧OS udhcpc 配置脚本 (精简版, 仅用 busybox 命令)
+# udhcpc 在获得/续约租约时以环境变量调用本脚本:
+#   $1 = bound|renew|deconfig, $interface, $ip, $subnet, $router, $dns ...
+[ -z "$1" ] && exit 0
+case "$1" in
+    bound|renew)
+        [ -n "$ip" ] && ifconfig "$interface" "$ip" netmask "${subnet:-255.255.255.0}"
+        [ -n "$router" ] && route add default gw "$router" 2>/dev/null
+        [ -n "$dns" ] && printf 'nameserver %s\n' "$dns" > /etc/resolv.conf 2>/dev/null
+        ;;
+    deconfig)
+        ifconfig "$interface" 0.0.0.0 2>/dev/null
+        ;;
+esac
+exit 0

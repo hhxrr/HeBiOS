@@ -1,0 +1,52 @@
+#!/bin/busybox sh
+# 合璧OS HeBi OS — /init 主初始化脚本 (内核以 PID 1 执行)
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+/bin/busybox --install -s /bin 2>/dev/null
+
+mount -t proc     none /proc    2>/dev/null
+mount -t sysfs    none /sys     2>/dev/null
+mount -t devtmpfs none /dev     2>/dev/null
+mkdir -p /tmp /run /var/log /mnt
+
+# 关闭多余内核打印(开机动画期保持清爽)
+echo 3 > /proc/sys/kernel/printk 2>/dev/null
+
+# ---- 已安装系统启动: 切换到真实根分区 ----
+# Live/安装/修复介质为 root=/dev/ram0 (留在 initramfs);
+# 已安装系统的 grub.cfg 由安装器生成为 root=/dev/vda4 等真实分区,
+# 此时把根切换到该分区, 从磁盘启动(失败则回退 Live 模式, 不阻塞启动)。
+# 关键: switch_root 必须由 PID 1 执行 —— busybox switch_root applet
+# 硬性要求 "PID must be 1", 放在 rcS 里(init 的子进程)必失败
+# (报 usage 后 shell 退出, 只剩 tty 登录, 无动画无桌面)。
+ROOT_DEV=""
+for a in $(cat /proc/cmdline 2>/dev/null); do
+    case "$a" in root=*) ROOT_DEV=${a#root=} ;; esac
+done
+case "$ROOT_DEV" in
+    ""|ram*|/dev/ram*)
+        : ;;  # 介质模式: 留在 initramfs
+    *)
+        # 若当前已运行在真实根上(极少见: 内核直接挂了真实根), 不重复切换
+        if ! awk '$2=="/"{print $1}' /proc/mounts 2>/dev/null | grep -q "^/dev/"; then
+            # 磁盘控制器驱动 (VMware SATA=ahci / NVMe=nvme /
+            # LSI-SCSI=mptspi / 半虚拟化=vmw_pvscsi; 真实硬件依赖
+            # ahci/nvme) —— 缺一个, 装好的系统就挂不上自己的根分区
+            for m in virtio_pci virtio_blk ata_piix ahci sd_mod \
+                     mptspi vmw_pvscsi BusLogic nvme \
+                     ext4 ext3 ext2 btrfs xfs; do
+                modprobe $m 2>/dev/null
+            done
+            mkdir -p /sysroot
+            if mount -o rw "$ROOT_DEV" /sysroot 2>/dev/null && [ -x /sysroot/bin/init ]; then
+                mount -t proc     proc /sysroot/proc 2>/dev/null
+                mount -t sysfs    sys  /sysroot/sys  2>/dev/null
+                mount -t devtmpfs dev /sysroot/dev  2>/dev/null
+                exec switch_root /sysroot /bin/init
+            fi
+            umount /sysroot 2>/dev/null   # 切换失败 → 回退 Live 模式
+        fi
+        ;;
+esac
+
+exec /bin/busybox init

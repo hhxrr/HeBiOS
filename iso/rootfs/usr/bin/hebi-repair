@@ -1,0 +1,277 @@
+#!/bin/busybox sh
+# ============================================================
+# hebi-repair — 合璧OS 系统修复工具
+# 从安装介质「固件修复模式」启动 (内核参数 hebi.repair=1)
+# 功能: 引导修复 / 分区挂载 / fstab 修复 / 密码重置 /
+#       文件系统检查 / 配置恢复 / 日志导出
+# ============================================================
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export TERM=linux
+# UTF-8 locale: ncursesw UTF-8 模式, 正确渲染中文与 Unicode 边框
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+BT="合璧OS HeBi OS 5.0 LTS (Jade) — 系统修复工具"
+LOG=/var/log/hebi-repair.log
+ANS=/tmp/hebi-ans
+mkdir -p /var/log; : > $LOG
+log() { echo "[$(date '+%H:%M:%S')] $*" >> $LOG; }
+
+# ---------- dialog 结果获取助手 (不用 --stdout, 避免管道陷阱) ----------
+ask() {
+    : > $ANS
+    dialog --output-fd 3 "$@" 3>>$ANS
+}
+
+mkdir -p /etc/hebios
+cat > /etc/hebios/dialogrc <<'THEME'
+screen_color = (CYAN,MAGENTA,ON)
+dialog_color = (BLACK,CYAN,OFF)
+title_color = (BLUE,WHITE,ON)
+border_color = (BLUE,WHITE,ON)
+button_active_color = (WHITE,BLUE,ON)
+button_inactive_color = (BLACK,WHITE,OFF)
+gauge_color = (BLUE,WHITE,ON)
+THEME
+export DIALOGRC=/etc/hebios/dialogrc
+
+list_disks() {
+    awk '$4 ~ /^(sd[a-z]|vd[a-z]|nvme[0-9]n[0-9]|mmcblk[0-9])$/ {
+        base=$4; sub(/p?[0-9]+$/,"",base)
+        if(!seen[base]++){ sz=$3/1024/1024; printf "%s %.1fGB ", base, sz }
+    }' /proc/partitions
+}
+
+find_root_part() { # 自动定位已安装的合璧OS根分区
+    for p in /dev/sd*[0-9] /dev/vd*[0-9] /dev/nvme*p[0-9]; do
+        [ -b "$p" ] || continue
+        if mount "$p" /mnt/target 2>/dev/null; then
+            if [ -f /mnt/target/etc/hebi-user ] || [ -d /mnt/target/usr/share/hebios ]; then
+                echo "$p"; return 0
+            fi
+            umount /mnt/target 2>/dev/null
+        fi
+    done
+    return 1
+}
+
+# ==================== 欢迎 ====================
+dialog --backtitle "$BT" --title " 合璧OS 系统修复 " --infobox \
+"\n    合璧OS 系统修复工具\n\n    诊断并修复已安装系统的引导、分区与配置\n\n    正在检测硬件 ..." 12 56
+/bin/busybox sleep 2
+
+mkdir -p /mnt/target
+ROOT_PART=$(find_root_part)
+if [ -n "$ROOT_PART" ]; then
+    mount "$ROOT_PART" /mnt/target 2>/dev/null
+    for d in /dev /proc /sys /run; do mount --bind $d /mnt/target$d 2>/dev/null; done
+    DETECT="✓ 已检测到合璧OS 安装: $ROOT_PART"
+else
+    DETECT="⚠ 未自动检测到合璧OS 安装，可手动指定"
+fi
+log "$DETECT"
+
+while :; do
+    ask --backtitle "$BT" --title " 修复中心 " --menu \
+"$DETECT\n\n请选择修复操作:" 18 66 8 \
+      "boot"    "🔧 修复系统引导 (重装 GRUB BIOS+UEFI)" \
+      "fstab"   "📄 修复 /etc/fstab 挂载表" \
+      "fsck"    "🔍 检查并修复文件系统错误" \
+      "pwd"     "🔑 重置用户密码" \
+      "config"  "♻️  恢复出厂系统配置 (/etc)" \
+      "initrd"  "💾 重新生成 initramfs 镜像" \
+      "export"  "📤 导出诊断日志到 U 盘/磁盘" \
+      "shell"   "⌨️ 进入修复 Shell (高级)" \
+      "exit"    "⏻ 退出并重启" || break
+    ACTION=$(cat $ANS)
+    [ -z "$ACTION" ] && continue
+    case "$ACTION" in
+
+    # ---------------- 修复引导 ----------------
+    boot)
+        if [ -z "$ROOT_PART" ]; then
+            DISKS=$(list_disks)
+            ask --backtitle "$BT" --title " 选择磁盘 " --menu "选择安装了合璧OS 的磁盘:" 14 60 5 $DISKS || continue
+            T=$(cat $ANS)
+            [ -z "$T" ] && continue
+            # 在该磁盘的所有分区中探测合璧OS 根分区 (nvme 分区带 p 后缀)
+            SUFFIX=""; case "$T" in nvme*|mmcblk*) SUFFIX="p";; esac
+            for i in 1 2 3 4 5 6; do
+                P="/dev/${T}${SUFFIX}${i}"
+                [ -b "$P" ] || continue
+                if mount "$P" /mnt/target 2>/dev/null; then
+                    if [ -f /mnt/target/etc/hebi-user ] || [ -d /mnt/target/usr/share/hebios ]; then
+                        ROOT_PART="$P"; break
+                    fi
+                    umount /mnt/target 2>/dev/null
+                fi
+            done
+            if [ -z "$ROOT_PART" ]; then
+                dialog --backtitle "$BT" --msgbox "在 /dev/$T 上未找到合璧OS 安装\n\n请确认选择了正确的磁盘。" 8 50
+                continue
+            fi
+            TARGET_DISK="/dev/$T"
+            DETECT="✓ 已选择合璧OS 安装: $ROOT_PART"
+        else
+            TARGET_DISK=$(echo "$ROOT_PART" | sed 's/p[0-9]*$//' | sed 's/[0-9]*$//')
+        fi
+        (
+        echo 10; echo "正在挂载目标系统 ..."
+        mount "$ROOT_PART" /mnt/target 2>/dev/null
+        for d in /dev /proc /sys /run; do mount --bind $d /mnt/target$d 2>/dev/null; done
+        # 挂载 ESP (vfat 分区): UEFI 引导链重装的前提。rcS 已加载
+        # nls_iso8859-1, vfat 挂载可用; ESP 从目标盘上按 TYPE=vfat 探测。
+        if [ -d /mnt/target/boot/efi ] && ! mountpoint -q /mnt/target/boot/efi 2>/dev/null; then
+            for p in ${TARGET_DISK}*[0-9]; do
+                [ -b "$p" ] || continue
+                if blkid "$p" 2>/dev/null | grep -q 'TYPE="vfat"'; then
+                    mount "$p" /mnt/target/boot/efi 2>>$LOG && break
+                fi
+            done
+        fi
+        sleep 0.3
+        echo 35; echo "正在重装 GRUB (BIOS) ..."
+        grub-install --root-directory=/mnt/target --target=i386-pc $TARGET_DISK >>$LOG 2>&1
+        sleep 0.3
+        echo 60; echo "正在重装 GRUB (UEFI) ..."
+        [ -d /mnt/target/boot/efi ] && grub-install --root-directory=/mnt/target \
+            --target=x86_64-efi --efi-directory=/mnt/target/boot/efi --removable >>$LOG 2>&1
+        sleep 0.3
+        echo 85; echo "正在刷新引导配置 ..."
+        cp /boot/grub/grub.cfg /mnt/target/boot/grub/grub.cfg 2>/dev/null
+        sed -i "s|root=/dev/ram0|root=$ROOT_PART|" /mnt/target/boot/grub/grub.cfg 2>/dev/null
+        cp -a /boot/grub/theme /mnt/target/boot/grub/ 2>/dev/null
+        echo 100; echo "引导修复完成"
+        ) | dialog --backtitle "$BT" --title " 修复系统引导 " --gauge "准备 ..." 10 60 0
+        dialog --backtitle "$BT" --msgbox "✓ 引导修复完成\n\n  磁盘: $TARGET_DISK\n  根分区: $ROOT_PART\n\n重启后应能正常进入合璧OS。" 10 52 ;;
+    esac
+    case "$ACTION" in
+
+    # ---------------- 修复 fstab ----------------
+    fstab)
+        if [ -z "$ROOT_PART" ]; then dialog --msgbox "未检测到已安装系统" 6 40; continue; fi
+        ask --backtitle "$BT" --title " 修复 fstab " --form \
+"重新生成 /etc/fstab\n\n根分区设备:" 14 60 0 \
+"设备 (如 /dev/sda2):" 1 1 "$ROOT_PART" 1 24 24 0 \
+"文件系统:" 2 1 "ext4" 2 24 24 0 || continue
+        NEW=$(cat $ANS)
+        DEV=$(echo "$NEW" | sed -n 1p); FS=$(echo "$NEW" | sed -n 2p)
+        [ -z "$DEV" ] && DEV="$ROOT_PART"
+        {
+            echo "# /etc/fstab — 合璧OS (修复工具重新生成 $(date))"
+            echo "$DEV / $FS defaults 0 1"
+            echo "tmpfs /tmp tmpfs defaults 0 0"
+        } > /mnt/target/etc/fstab
+        dialog --backtitle "$BT" --textbox /mnt/target/etc/fstab 12 60
+        dialog --msgbox "✓ fstab 已修复" 6 30 ;;
+
+    # ---------------- 文件系统检查 ----------------
+    fsck)
+        if [ -z "$ROOT_PART" ]; then dialog --msgbox "未检测到已安装系统" 6 40; continue; fi
+        (
+        umount /mnt/target/proc /mnt/target/dev /mnt/target/sys /mnt/target/run 2>/dev/null
+        umount /mnt/target 2>/dev/null
+        echo 20; echo "正在卸载目标分区 ..."
+        sleep 0.3
+        echo 50; echo "正在检查文件系统 (fsck -y) ..."
+        fsck -y "$ROOT_PART" >>$LOG 2>&1
+        echo 100; echo "检查完成 (详见日志)"
+        ) | dialog --backtitle "$BT" --title " 文件系统检查 " --gauge "准备 ..." 8 56 0
+        dialog --backtitle "$BT" --msgbox "✓ 文件系统检查完成\n\n日志: /var/log/hebi-repair.log" 8 46
+        mount "$ROOT_PART" /mnt/target 2>/dev/null ;;
+
+    # ---------------- 重置密码 ----------------
+    pwd)
+        if [ -z "$ROOT_PART" ]; then dialog --msgbox "未检测到已安装系统" 6 40; continue; fi
+        ask --backtitle "$BT" --title " 重置密码 " --inputbox \
+"输入要重置密码的用户名:\n\n(当前系统用户: $(cat /mnt/target/etc/hebi-user 2>/dev/null))" 12 56 \
+"$(cat /mnt/target/etc/hebi-user 2>/dev/null)" || continue
+        U=$(cat $ANS)
+        while :; do
+            ask --backtitle "$BT" --passwordbox "新密码:" 10 50 "" || break
+            A=$(cat $ANS)
+            ask --backtitle "$BT" --passwordbox "确认新密码:" 10 50 "" || break
+            B=$(cat $ANS)
+            [ "$A" = "$B" ] && [ -n "$A" ] && break
+            dialog --msgbox "两次输入不一致" 6 30
+        done
+        if [ -n "$A" ]; then
+            # 先确保用户在 passwd/group 中存在 (模板用户或新建自定义用户)
+            if ! grep -q "^$U:" /mnt/target/etc/passwd; then
+                echo "$U:x:1000:1000:$U:/home/$U:/bin/sh" >> /mnt/target/etc/passwd
+                grep -q "^$U:" /mnt/target/etc/group || \
+                    echo "$U:x:1000:" >> /mnt/target/etc/group
+                mkdir -p /mnt/target/home/$U
+            fi
+            # 直接写 sha512 哈希 (chpasswd -R 依赖 PAM, chroot 内无
+            # pam.d 配置必然 pam_start 失败 —— 假成功陷阱)
+            HASH=$(/bin/busybox mkpasswd -m sha512 "$A" 2>/dev/null)
+            if [ -n "$HASH" ]; then
+                if grep -q "^$U:" /mnt/target/etc/shadow; then
+                    awk -v u="$U" -v h="$HASH" 'BEGIN{FS=OFS=":"} $1==u{$2=h} {print}' \
+                        /mnt/target/etc/shadow > /mnt/target/etc/shadow.hb \
+                        && cat /mnt/target/etc/shadow.hb > /mnt/target/etc/shadow \
+                        && rm -f /mnt/target/etc/shadow.hb
+                else
+                    echo "$U:$HASH:19000:0:99999:7:::" >> /mnt/target/etc/shadow
+                fi
+            fi
+            echo "$U" > /mnt/target/etc/hebi-user
+            if grep "^$U:" /mnt/target/etc/shadow | grep -q ':\$6\$'; then
+                dialog --msgbox "✓ 用户 $U 的密码已重置" 7 40
+            else
+                dialog --msgbox "✗ 密码重置失败 (哈希写入校验未通过)" 7 40
+            fi
+        fi ;;
+
+    # ---------------- 恢复出厂配置 ----------------
+    config)
+        dialog --backtitle "$BT" --colors --yesno \
+"\Z1⚠ 恢复出厂配置\Z0\n\n将从安装介质恢复以下关键配置:\n  /etc/hostname  /etc/issue\n  /etc/hebios/*  桌面环境默认设置\n\n\Z1不会删除\Z0用户个人文件 (/home)。\n\n确定继续吗？" 14 58 || continue
+        (
+        echo 25; echo "正在备份现有配置 ..."
+        [ -d /mnt/target/etc ] && cp -a /mnt/target/etc /mnt/target/etc.bak.$(date +%s) 2>/dev/null
+        sleep 0.3
+        echo 60; echo "正在恢复出厂配置 ..."
+        for f in hostname issue hebi-user; do cp /etc/$f /mnt/target/etc/ 2>/dev/null; done
+        cp -a /usr/share/hebios /mnt/target/usr/share/ 2>/dev/null
+        echo 100; echo "恢复完成"
+        ) | dialog --backtitle "$BT" --gauge "准备 ..." 8 52 0
+        dialog --msgbox "✓ 已恢复出厂配置\n原配置备份于 /etc.bak.* 目录" 7 46 ;;
+
+    # ---------------- 重建 initramfs ----------------
+    initrd)
+        (
+        echo 30; echo "正在重新生成 initramfs ..."
+        # gzip -2: 与安装核心保持同一级别。-9 慢 14 倍而体积几乎相同
+        # (见 hebi-install-lib.sh 说明), 修复工具同样不应让 CPU 长时间飙满
+        cd /mnt/target 2>/dev/null && find . | cpio -o -H newc -R root:root 2>/dev/null | gzip -2 > /mnt/target/boot/initrd.gz
+        echo 100; echo "initramfs 已重建"
+        ) | dialog --backtitle "$BT" --gauge "准备 ..." 8 52 0
+        dialog --msgbox "✓ initramfs 已重建:\n  /boot/initrd.gz" 7 44 ;;
+
+    # ---------------- 导出日志 ----------------
+    export)
+        ask --backtitle "$BT" --title " 导出日志 " --fselect "/mnt/" 16 64 || continue
+        D=$(cat $ANS)
+        [ -d "$D" ] || D=/mnt
+        cp $LOG "$D/hebi-repair.log" 2>/dev/null
+        cp /var/log/hebi-install.log "$D/hebi-install.log" 2>/dev/null
+        dmesg > "$D/hebi-dmesg.log" 2>/dev/null
+        dialog --msgbox "✓ 日志已导出至:\n  $D/hebi-repair.log\n  $D/hebi-install.log\n  $D/hebi-dmesg.log" 10 52 ;;
+
+    # ---------------- 修复 Shell ----------------
+    shell)
+        dialog --backtitle "$BT" --infobox "进入修复 Shell ...\n\n输入 exit 返回修复中心" 8 44
+        sleep 1
+        printf '\033[2J\033[H' > /dev/console 2>/dev/null
+        echo "合璧OS 修复 Shell — 目标系统已挂载于 /mnt/target"
+        /bin/busybox sh
+        printf '\033[2J\033[H' > /dev/console 2>/dev/null ;;
+
+    # ---------------- 退出 ----------------
+    exit)
+        dialog --backtitle "$BT" --yesno "修复完成，现在重启吗？" 7 40 && {
+            sync; reboot -f 2>/dev/null || echo b > /proc/sysrq-trigger
+        }
+        break ;;
+    esac
+done

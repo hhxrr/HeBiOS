@@ -1,0 +1,26 @@
+#!/bin/busybox sh
+# hebi-app — 合璧OS 应用运行时
+# 在真实系统中, 所有合璧应用(.mdn 安装)由 合璧桌面 Shell 以 Web 应用方式承载。
+# 本脚本提供应用注册/查询/启动接口, 供 hbpm 与后台调用。
+APPDIR=/var/lib/hebios/apps
+mkdir -p $APPDIR
+
+case "$1" in
+    register)
+        APP=$2; VER=$3; SRC=$4
+        [ -z "$APP" ] && { echo "usage: hebi-app register <id> <ver> <source>"; exit 1; }
+        echo "id=$APP version=${VER:-1.0.0} source=${SRC:-selfdev} installed=$(date +%s)" > $APPDIR/$APP.app
+        echo "hebi-app: 已注册应用 $APP"
+        ;;
+    list)
+        for f in $APPDIR/*.app; do
+            [ -f "$f" ] && cat "$f"
+        done
+        ;;
+    run)
+        echo "hebi-app: 启动 $2 (由合璧桌面 Shell 承载)"
+        ;;
+    *)
+        echo "usage: hebi-app <register|list|run>"
+        ;;
+esac

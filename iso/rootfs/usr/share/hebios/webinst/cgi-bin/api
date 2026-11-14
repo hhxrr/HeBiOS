@@ -1,0 +1,189 @@
+#!/bin/busybox sh
+# ============================================================
+# /usr/share/hebios/webinst/cgi-bin/api — 合璧OS 网页安装器 CGI API
+# 由 busybox httpd 调用 (URL: /cgi-bin/api?op=xxx&...)
+#   op=disks     磁盘列表
+#   op=install   启动安装 (后台执行安装核心 hebi_do_install)
+#   op=progress  安装进度 (轮询)
+#   op=log       安装日志尾部
+#   op=abort     中止安装
+#   op=reboot    重启进入已安装系统
+# 安装核心复用 /usr/lib/hebi-install-lib.sh (与 TUI 安装器同一实现)
+# ============================================================
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+. /usr/lib/hebi-install-lib.sh
+
+RUN=/tmp/hebi-webinst
+PROG=$RUN/progress
+FAIL=$RUN/fail
+DONE=$RUN/done
+LOGF=/var/log/hebi-webinst.log
+PIDF=$RUN/pid
+mkdir -p $RUN
+
+# ---------- HTTP 输出 ----------
+out() { printf 'Content-type: application/json\n\n%s\n' "$1"; }
+# JSON 字符串转义 (反斜杠与双引号)
+jesc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\n\r'; }
+
+# ---------- 工具 ----------
+# URL 解码: busybox printf %b 支持 \xHH 转义 (已实测), 先把 %XX 变成 \xXX
+urldecode() {
+    local s="$1"
+    s=${s//+/ }
+    s=${s//%/\\x}
+    printf '%b' "$s"
+}
+# 从 QUERY_STRING 取参数值 (保留 = 号后的全部内容, 密码可能含 =)
+qget() {
+    printf '%s\n' "$QUERY_STRING" | tr '&' '\n' | while IFS='=' read -r k v; do
+        [ "$k" = "$1" ] && { printf '%s' "$v"; break; }
+    done
+}
+disk_names() {
+    # 整盘名规则: sdX / vdX / mmcblkN / nvmeMnNk 均为整盘本身
+    # (NVMe 的 nvme0n1 是 namespace 1 = 整盘, 分区才是 nvme0n1p1;
+    #  旧写法 sub(/p?[0-9]+$/) 会把 nvme0n1 误剥成不存在的 nvme0n)
+    awk '$4 ~ /^(sd[a-z]|vd[a-z])[0-9]*$/ || $4 ~ /^mmcblk[0-9]+(p[0-9]+)?$/ || $4 ~ /^nvme[0-9]+n[0-9]+(p[0-9]+)?$/ {
+        base=$4
+        sub(/p[0-9]+$/,"",base)                    # nvme/mmcblk 分区: 去 pN
+        if ($4 ~ /^(sd|vd)/) sub(/[0-9]+$/,"",base) # sd/vd 分区: 去尾部数字
+        if(!seen[base]++) print base
+    }' /proc/partitions
+}
+disk_size_gb() { awk -v d="$1" '$4==d {printf "%.1f", $3/1024/1024}' /proc/partitions; }
+disk_model() {
+    local m=""
+    [ -r /sys/block/$1/device/model ] && m=$(cat /sys/block/$1/device/model 2>/dev/null)
+    [ -z "$m" ] && [ -r /sys/block/$1/device/name ] && m=$(cat /sys/block/$1/device/name 2>/dev/null)
+    printf '%s' "$m"
+}
+install_running() {
+    [ -f $PIDF ] && kill -0 $(cat $PIDF) 2>/dev/null
+}
+
+# ---------- op=disks ----------
+op_disks() {
+    disks=""
+    for d in $(disk_names); do
+        sz=$(disk_size_gb "$d")
+        md=$(disk_model "$d")
+        # 该磁盘的现有分区 (提示用户将被格式化)
+        parts=""
+        for p in $(awk -v d="$d" '$4 ~ "^"d"p?[0-9]+$" {print $4}' /proc/partitions); do
+            psz=$(awk -v x="$p" '$4==x {printf "%.1f", $3/1024/1024}' /proc/partitions)
+            parts="$parts{\"dev\":\"$p\",\"size\":\"$psz\"},"
+        done
+        parts=${parts%,}
+        disks="$disks{\"dev\":\"$d\",\"size\":\"$sz\",\"model\":\"$(jesc "$md")\",\"parts\":[$parts]},"
+    done
+    disks=${disks%,}
+    out "{\"ok\":true,\"disks\":[$disks]}"
+}
+
+# ---------- op=install ----------
+op_install() {
+    if install_running; then out '{"ok":false,"error":"安装已在进行中，请稍候"}'; return; fi
+    TARGET=$(urldecode "$(qget target)")
+    PART_MODE=$(qget mode); [ -n "$PART_MODE" ] || PART_MODE=auto
+    FS_TYPE=$(qget fs);     [ -n "$FS_TYPE" ] || FS_TYPE=ext4
+    SWAP_SIZE=$(qget swap)
+    USERNAME=$(urldecode "$(qget user)")
+    HB_PASSWORD=$(urldecode "$(qget pass)")
+    HOSTNAME=$(urldecode "$(qget host)")
+    DRIVERS=$(urldecode "$(qget drivers)")
+    # ---- 参数校验 (安装核心会再校验一遍, 这里提前拦截明显错误) ----
+    case "$TARGET" in
+        ''|*[!a-z0-9]*) out '{"ok":false,"error":"目标磁盘名非法"}'; return ;;
+    esac
+    [ -b /dev/$TARGET ] || { out '{"ok":false,"error":"目标磁盘 /dev/'"$TARGET"' 不存在"}'; return; }
+    case "$PART_MODE" in auto|auto_uefi|manual|lvm) ;; *) PART_MODE=auto ;; esac
+    case "$FS_TYPE" in ext4|btrfs|xfs|ext2) ;; *) FS_TYPE=ext4 ;; esac
+    case "$SWAP_SIZE" in ''|*[!0-9]*) SWAP_SIZE=2048 ;; esac
+    [ "$SWAP_SIZE" -lt 128 ] 2>/dev/null && SWAP_SIZE=2048
+    [ -n "$USERNAME" ] || USERNAME=hebios
+    [ -n "$HOSTNAME" ] || HOSTNAME=hebios-pc
+    # ---- 后台执行安装核心 ----
+    # 注意: 必须重定向子 shell 的 stdout/stderr —— 否则安装进程会持有
+    # httpd 的 CGI 输出管道, 导致 HTTP 响应永远等不到 EOF 而挂起。
+    (
+        HB_LOG=$LOGF; HB_FAIL_FILE=$FAIL; HB_RESULT_FILE=$DONE; HB_PROGRESS_FILE=$PROG
+        export HB_LOG HB_FAIL_FILE HB_RESULT_FILE HB_PROGRESS_FILE
+        TARGET=$TARGET; PART_MODE=$PART_MODE; FS_TYPE=$FS_TYPE; SWAP_SIZE=$SWAP_SIZE
+        USERNAME=$USERNAME; HB_PASSWORD=$HB_PASSWORD; HOSTNAME=$HOSTNAME; DRIVERS=$DRIVERS
+        export TARGET PART_MODE FS_TYPE SWAP_SIZE USERNAME HB_PASSWORD HOSTNAME DRIVERS
+        hebi_do_install
+    ) >/dev/null 2>&1 </dev/null &
+    echo $! > $PIDF
+    out '{"ok":true}'
+}
+
+# ---------- op=progress ----------
+op_progress() {
+    if [ -s $FAIL ]; then
+        out "{\"running\":false,\"ok\":false,\"pct\":0,\"msg\":\"$(jesc "$(cat $FAIL)")\"}"
+        return
+    fi
+    if [ -f $DONE ]; then
+        root=""; esp=""; fs=""; boot=""; user=""; host=""
+        while IFS='=' read -r k v; do
+            case "$k" in
+                ROOT_PART) root=$v ;; ESP_PART) esp=$v ;; FS_TYPE) fs=$v ;;
+                BOOT_NOTE) boot=$v ;; USERNAME) user=$v ;; HOSTNAME) host=$v ;;
+            esac
+        done < $DONE
+        out "{\"running\":false,\"ok\":true,\"pct\":100,\"msg\":\"安装完成\",\
+\"root\":\"/dev/$root\",\"esp\":\"/dev/$esp\",\"fs\":\"$fs\",\"boot\":\"$(jesc "$boot")\",\
+\"user\":\"$(jesc "$user")\",\"host\":\"$(jesc "$host")\"}"
+        return
+    fi
+    if install_running; then
+        last=$(tail -1 $PROG 2>/dev/null)
+        pct=${last%%|*}; msg=${last#*|}
+        case "$pct" in ''|*[!0-9]*) pct=0 ;; esac
+        [ -n "$last" ] || { pct=0; msg="正在准备 ..."; }
+        out "{\"running\":true,\"ok\":null,\"pct\":$pct,\"msg\":\"$(jesc "$msg")\"}"
+    else
+        out '{"running":false,"ok":false,"pct":0,"msg":"安装进程未在运行"}'
+    fi
+}
+
+# ---------- op=log ----------
+op_log() {
+    n=$(qget n); case "$n" in ''|*[!0-9]*) n=25 ;; esac
+    # 保留换行 (JSON \n), 供网页日志框多行显示
+    jlog=$(tail -n "$n" $LOGF 2>/dev/null | tr -d '\r' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | awk '{printf "%s\\n", $0}')
+    out "{\"ok\":true,\"log\":\"$jlog\"}"
+}
+
+# ---------- op=abort ----------
+op_abort() {
+    if install_running; then
+        kill $(cat $PIDF) 2>/dev/null
+        echo "用户通过网页中止了安装" > $FAIL
+        rm -f $PIDF
+        out '{"ok":true}'
+    else
+        out '{"ok":false,"error":"没有正在进行的安装"}'
+    fi
+}
+
+# ---------- op=reboot ----------
+op_reboot() {
+    out '{"ok":true}'
+    sync
+    /bin/busybox sleep 1
+    reboot -f 2>/dev/null || echo b > /proc/sysrq-trigger
+}
+
+# ---------- 分发 ----------
+OP=$(qget op)
+case "$OP" in
+    disks)    op_disks ;;
+    install)  op_install ;;
+    progress) op_progress ;;
+    log)      op_log ;;
+    abort)    op_abort ;;
+    reboot)   op_reboot ;;
+    *)        out '{"ok":false,"error":"未知操作: '"$(jesc "$OP")"'"}' ;;
+esac

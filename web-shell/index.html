@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>合璧OS HeBi OS 5.0 LTS · Jade</title>
+<link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+  <!-- 壁纸层 -->
+  <div id="hb-wallpaper"></div>
+
+  <!-- 桌面 -->
+  <div id="hb-desktop">
+    <div id="hb-icons"></div>
+    <div id="hb-toasts"></div>
+    <div id="hb-taskbar"></div>
+  </div>
+
+  <!-- 开机动画（Canvas 由 boot.js 动态创建） -->
+  <div id="hb-boot"></div>
+
+  <!-- 登录界面 -->
+  <div id="hb-login">
+    <div class="login-clock">
+      <div class="t" id="login-clock-t">--:--</div>
+      <div class="d" id="login-clock-d"></div>
+    </div>
+    <div class="login-users" id="login-users"></div>
+    <div class="login-pwd" id="login-pwd">
+      <div class="pwd-name" id="pwd-name"></div>
+      <div class="pwd-row">
+        <input type="password" id="pwd-input" placeholder="密码" autocomplete="off">
+        <button class="pwd-go" id="pwd-go">→</button>
+      </div>
+      <div class="pwd-err" id="pwd-err"></div>
+      <div class="pwd-hint">合合用户密码提示：hebi</div>
+    </div>
+    <div class="login-bottom">
+      <button id="lb-login"><span class="ico">🔑</span>登录</button>
+      <button id="lb-net"><span class="ico">📶</span>网络</button>
+      <button id="lb-a11y"><span class="ico">♿</span>辅助功能</button>
+      <button id="lb-power"><span class="ico">⏻</span>电源</button>
+    </div>
+  </div>
+
+  <!-- 锁屏 -->
+  <div id="hb-lock">
+    <div class="lock-time" id="lock-time">--:--</div>
+    <div class="lock-date" id="lock-date"></div>
+    <div class="lock-hint">点击任意处解锁</div>
+  </div>
+
+  <!-- 关机遮罩 -->
+  <div id="hb-shutdown">
+    <div id="sd-logo"></div>
+    <div class="sd-msg" id="sd-msg">正在关机…</div>
+    <div class="sd-ring"></div>
+  </div>
+
+  <script src="js/core.js"></script>
+  <script src="js/boot.js"></script>
+  <script src="js/apps.js"></script>
+  <script src="js/apps/files.js"></script>
+  <script src="js/apps/music.js"></script>
+  <script src="js/apps/settings.js"></script>
+  <script src="js/apps/store.js"></script>
+  <script src="js/apps/office.js"></script>
+  <script src="js/apps/voice.js"></script>
+  <script src="js/apps/terminal.js"></script>
+  <script src="js/apps/mail.js"></script>
+  <script src="js/apps/browser.js"></script>
+  <script src="js/apps/misc.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      HeBi.$("#sd-logo").innerHTML = HeBi.LOGO_SVG;
+      HeBi.$("#lb-net").onclick = () => HeBi.toast("网络", "eth0 已连接 · Internet 可达", "net");
+      HeBi.$("#lb-a11y").onclick = () => HeBi.toast("辅助功能", "已启用高对比度与放大镜（演示）", "settings");
+      HeBi.$("#lb-power").onclick = () => HeBi.powerMenu(innerWidth - 90, innerHeight - 130);
+      HeBi.boot.run();
+    });
+  </script>
+</body>
+</html>

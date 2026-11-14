@@ -1,0 +1,132 @@
+#!/bin/busybox sh
+# 合璧OS rcS — 系统服务启动(开机动画 + 通用驱动)
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# 中文环境: LANG 记录中文意图 (系统 locale 数据为 C.UTF-8 兼容,
+# 各程序 setlocale 失败时自动回退 C, 不影响 UTF-8 字节流输出)
+export LANG=zh_CN.UTF-8 TZ=Asia/Shanghai
+
+# 降低内核打印等级(动画期保持清爽)
+echo 3 > /proc/sys/kernel/printk 2>/dev/null
+
+# ---- 已安装系统启动: 切换到真实根分区 ----
+# Live/安装/修复介质为 root=/dev/ram0 (留在 initramfs);
+# 已安装系统的 grub.cfg 由安装器生成为 root=/dev/vda3 等真实分区,
+# 此时把根切换到该分区, 从磁盘启动(失败则回退 Live 模式, 不阻塞启动)
+ROOT_DEV=""
+for a in $(cat /proc/cmdline 2>/dev/null); do
+    case "$a" in root=*) ROOT_DEV=${a#root=} ;; esac
+done
+case "$ROOT_DEV" in
+    ""|ram*|/dev/ram*)
+        : ;;  # 介质模式: 留在 initramfs
+    *)
+        # 若当前已运行在真实根上(switch_root 后的第二次 rcS), 不重复切换
+        if ! awk '$2=="/"{print $1}' /proc/mounts 2>/dev/null | grep -q "^/dev/"; then
+            # 此处的 modprobe 决定"安装后系统能否挂载自己的根分区" ——
+            # 磁盘控制器驱动必须是模块可加载的 (VMware SATA=ahci /
+            # NVMe=nvme / LSI-SCSI=mptspi / 半虚拟化=vmw_pvscsi;
+            # 真实硬件同样依赖 ahci/nvme)。漏一个, 装好的系统就起不来。
+            modprobe virtio_pci virtio_blk ata_piix ahci sd_mod \
+                     mptspi vmw_pvscsi BusLogic nvme \
+                     ext4 ext3 ext2 btrfs xfs 2>/dev/null
+            mkdir -p /sysroot
+            if mount -o rw "$ROOT_DEV" /sysroot 2>/dev/null && [ -x /sysroot/bin/init ]; then
+                mount -t proc     proc /sysroot/proc 2>/dev/null
+                mount -t sysfs    sys  /sysroot/sys  2>/dev/null
+                mount -t devtmpfs dev  /sysroot/dev  2>/dev/null
+                # 真正的切换已由 /init (PID 1) 完成; 此处仅兜底:
+                # busybox switch_root 要求 PID 1, 子进程调用必失败,
+                # 故不能用 exec (exec 失败会杀死 rcS, 只剩 tty 登录)。
+                # 静默尝试一次, 失败也无妨 —— 继续走 Live 模式。
+                switch_root /sysroot /bin/init >/dev/null 2>&1
+            fi
+            umount /sysroot 2>/dev/null   # 切换失败 → 回退 Live 模式
+        fi
+        ;;
+esac
+
+# ---- 帧缓冲图形(vga=791 由内核早期代码设置 VBE 模式, sysfb/simpledrm 接管) ----
+# 注意: Linux 6.8 已移除 vesafb; vga16fb 会重置 VGA 导致帧缓冲失效, 故不加载
+if ! grep -q "hebi.nofb" /proc/cmdline 2>/dev/null; then
+    if [ ! -e /dev/fb0 ]; then
+        modprobe vga16fb 2>/dev/null || modprobe efifb 2>/dev/null
+    fi
+fi
+
+# ---- 启动开机动画(帧缓冲 PNG 序列) ----
+if [ -d /boot/splash-frames ]; then
+    /usr/bin/fbsplash /boot/splash-frames 15 &
+    echo $! > /run/splash.pid
+fi
+
+# ---- 通用驱动(存储/网络/USB/输入/文件系统/NLS字符集) ----
+# nls_iso8859-1: VFAT(ESP) 挂载默认 iocharset —— 内核 request_module 在
+# initramfs 环境不可靠, 必须显式 modprobe, 否则 ESP 挂不上, UEFI 引导装不了
+# VMware 适配: LSI Logic 并行 SCSI=mptspi, 半虚拟化 SCSI=vmw_pvscsi,
+# BusLogic=BusLogic, NVMe 控制器=nvme, vmxnet3 网卡=vmxnet3
+for m in virtio_pci virtio_blk virtio_net virtio_console \
+         ata_piix ahci sd_mod sr_mod usb-storage \
+         mptspi vmw_pvscsi BusLogic nvme \
+         xhci-hcd ehci-hcd uhci-hcd \
+         e1000 e1000e 8139too r8169 sky2 vmxnet3 \
+         ext4 ext3 ext2 isofs udf loop squashfs fuse \
+         nls_iso8859-1 nls_cp437 nls_utf8 \
+         pcspkr atkbd i8042 psmouse; do
+    modprobe $m 2>/dev/null
+done
+
+# ---- 主机名与网络 ----
+# 接口 UP: Linux 网络接口默认 DOWN 状态, 必须先 up 再 DHCP, 否则 udhcpc
+# 报 "sendto: Network is down" 并陷入无限重试循环
+# (应用商店在线源 / 网页安装 / 系统更新均依赖网络; lo 亦需 UP, 否则
+#  127.0.0.1 本地回环不可达)
+# 注意: Ubuntu busybox 的 udhcpc 默认脚本路径为 /etc/udhcpc/default.script
+hostname hebios 2>/dev/null
+for i in $(ls /sys/class/net 2>/dev/null); do
+    ifconfig $i up 2>/dev/null
+done
+udhcpc -i eth0 -s /etc/udhcpc/default.script 2>/dev/null &
+
+# ---- 服务启动(开机动画展示时长 ~12 秒) ----
+/bin/busybox sleep 12
+
+# ---- 结束开机动画 ----
+[ -f /run/splash.pid ] && kill -TERM $(cat /run/splash.pid) 2>/dev/null
+rm -f /run/splash.pid
+/bin/busybox sleep 1
+printf '\033[2J\033[H\033[?25h' > /dev/console 2>/dev/null
+
+# 开机横幅
+cat /etc/issue
+
+# ---- 启动模式分发: 安装 / 修复 / 网页安装 / 体验 ----
+# grub 菜单 "图形化安装" 传 hebi.install=1; "网页安装" 传 hebi.webinst=1;
+# "固件修复模式" 传 hebi.repair=1
+CMDLINE=$(cat /proc/cmdline 2>/dev/null)
+case "$CMDLINE" in
+    *hebi.install=1*)
+        /bin/busybox sleep 1
+        printf '\033[?25h' > /dev/console 2>/dev/null
+        exec /usr/bin/hebi-installer
+        ;;
+    *hebi.webinst=1*)
+        # 网页安装模式: 停止开机动画, 启动 httpd + CGI 安装服务
+        [ -f /run/splash.pid ] && kill -TERM $(cat /run/splash.pid) 2>/dev/null
+        rm -f /run/splash.pid
+        /bin/busybox sleep 1
+        printf '\033[2J\033[H\033[?25h' > /dev/console 2>/dev/null
+        exec /usr/bin/hebi-webinst
+        ;;
+    *hebi.repair=1*)
+        /bin/busybox sleep 1
+        printf '\033[?25h' > /dev/console 2>/dev/null
+        exec /usr/bin/hebi-repair
+        ;;
+esac
+
+# 体验模式: 启动桌面 Shell (Web 桌面优先, 回退 TUI)
+if [ -x /usr/bin/hebi-shell ]; then
+    exec /usr/bin/hebi-shell
+fi
+exec /bin/busybox sh
+exit 0

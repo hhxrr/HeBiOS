@@ -1,0 +1,8 @@
+::sysinit:/etc/init.d/rcS
+tty1::respawn:/bin/login -f root
+tty2::respawn:/bin/login -f root
+tty3::respawn:/bin/login -f root
+tty4::respawn:/usr/bin/hebi-shell
+::ctrlaltdel:/sbin/reboot
+::shutdown:/etc/init.d/rc.shutdown
+::restart:/bin/init

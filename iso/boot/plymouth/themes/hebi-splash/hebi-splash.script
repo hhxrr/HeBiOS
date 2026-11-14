@@ -1,0 +1,65 @@
+/* 合璧OS Plymouth 开机动画脚本
+ * logo 缩放脉冲 + 渐变进度条 + 旋转点环
+ */
+win_width  = Window.GetWidth();
+win_height = Window.GetHeight();
+
+/* ---- 徽标 ---- */
+logo_image = Image("logo.png");
+logo_w = logo_image.GetWidth();
+logo_h = logo_image.GetHeight();
+logo_sprite = Sprite(logo_image);
+logo_sprite.SetX(win_width / 2 - logo_w / 2);
+logo_sprite.SetY(win_height * 0.28);
+
+/* ---- 旋转点环 ---- */
+dot_image = Image("bullet.png");
+dot_radius = 150;
+dot_count = 12;
+dot_sprites = [];
+for (i = 0; i < dot_count; i++) {
+    s = Sprite(dot_image);
+    dot_sprites[i] = s;
+}
+dot_phase = 0;
+
+/* ---- 进度条 ---- */
+progress_image = Image("progress.png");
+progress_w = progress_image.GetWidth();
+progress_sprite = Sprite(progress_image);
+progress_sprite.SetX(win_width / 2 - progress_w / 2);
+progress_sprite.SetY(win_height * 0.66);
+
+box_image = Image("progress_box.png");
+box_sprite = Sprite(box_image);
+box_sprite.SetX(win_width / 2 - progress_w / 2);
+box_sprite.SetY(win_height * 0.66);
+
+/* ---- 回调 ---- */
+fun refresh_callback () {
+    dot_phase = dot_phase + 0.06;
+    for (i = 0; i < dot_count; i++) {
+        ang = dot_phase + i * (Math.Pi() * 2 / dot_count);
+        x = win_width / 2 + dot_radius * Math.Sin(ang);
+        y = win_height * 0.28 + logo_h / 2 + dot_radius * Math.Cos(ang);
+        dot_sprites[i].SetX(x - 6);
+        dot_sprites[i].SetY(y - 6);
+    }
+    /* 徽标呼吸脉冲 */
+    pulse = 1.0 + 0.04 * Math.Sin(dot_phase * 4);
+    w = logo_w * pulse;
+    h = logo_h * pulse;
+    logo_sprite.SetImage(logo_image);
+    logo_sprite.SetX(win_width / 2 - w / 2);
+    logo_sprite.SetY(win_height * 0.28 - (h - logo_h) / 2);
+}
+Plymouth.SetRefreshFunction(refresh_callback);
+
+fun progress_callback (duration, progress) {
+    box_sprite.SetWidth(progress_w * progress);
+}
+Plymouth.SetBootProgressFunction(progress_callback);
+
+fun message_callback (msg) {
+}
+Plymouth.SetMessageFunction(message_callback);
